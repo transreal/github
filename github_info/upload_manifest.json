@@ -1,0 +1,13 @@
+{
+	"packageName":"github",
+	"files":[
+		"github.wl"
+	],
+	"directories":[
+		"github_info"
+	],
+	"excludePatterns":[
+		"github_info\/history\/",
+		"github_info\/references\/"
+	]
+}

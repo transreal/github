@@ -1,0 +1,149 @@
+(* Content-type: application/vnd.wolfram.mathematica *)
+
+(*** Wolfram Notebook File ***)
+(* http://www.wolfram.com/nb *)
+
+(* CreatedBy='Wolfram 14.3' *)
+
+(*CacheID: 234*)
+(* Internal cache information:
+NotebookFileLineBreakTest
+NotebookFileLineBreakTest
+NotebookDataPosition[       154,          7]
+NotebookDataLength[      6188,        141]
+NotebookOptionsPosition[      5135,        114]
+NotebookOutlinePosition[      5553,        131]
+CellTagsIndexPosition[      5510,        128]
+WindowFrame->Normal*)
+
+(* Beginning of Notebook Content *)
+Notebook[{
+
+Cell[CellGroupData[{
+Cell["Design notes", "Section",
+ CellChangeTimes->{{3.9826229394005833`*^9, 3.98262294408243*^9}, {
+  3.982623201331497*^9, 
+  3.9826232064407177`*^9}},ExpressionUUID->"aaa51d95-0277-9249-8532-\
+e1c6ef100aaf"],
+
+Cell[CellGroupData[{
+
+Cell["\:65e5\:672c\:8a9e\:306e\:6271\:3044", "Subsubsection",
+ CellChangeTimes->{
+  3.9826986161682262`*^9},ExpressionUUID->"ffe10924-d3ab-7846-ac0c-\
+f7f7aea6093c"],
+
+Cell["\<\
+GitHub\:30ea\:30dd\:30b8\:30c8\:30ea\:540d\:306b\:306f\:30a2\:30eb\:30d5\:30a1\
+\:30d9\:30c3\:30c8\:3057\:304b\:4f7f\:3048\:306a\:3044\:306e\:3067\:3001\:65e5\
+\:672c\:8a9e\:30d5\:30a1\:30a4\:30eb\:540d\:306e\:5834\:5408\:306b\:306f\:30ea\
+\:30dd\:30b8\:30c8\:30ea\:540d\:3092\:3064\:3051\:306a\:304a\:3059\:5fc5\:8981\
+\:304c\:3042\:308b\:3002\:305d\:306e\:3088\:3046\:306a\:30ea\:30dd\:30b8\:30c8\
+\:30ea\:306e\:60c5\:5831\:306f\:3001GithubRepositories/repo_database.json\
+\:3067\:7ba1\:7406\:3059\:308b\:3002\
+\>", "Text",
+ CellChangeTimes->{{3.9826961587806377`*^9, 
+  3.982696325609762*^9}},ExpressionUUID->"e137d0aa-da93-8b4e-8d87-\
+62ad5f4f7e4c"],
+
+Cell["\<\
+\:300c\:672a\:767b\:9332\:306e\:975e ASCII \:540d\:306f pkg-<MD5\:30cf\:30c3\
+\:30b7\:30e5> \:5f62\:5f0f\:300d\:3067\:306f\:306a\:304f\:3001\:65e5\:672c\
+\:8a9e\:540d\:3092\:53cd\:6620\:3057\:305f\:540d\:79f0\:306b\:3057\:3066\:3001\
+\:30cf\:30c3\:30b7\:30e5\:3092\:3064\:3051\:308b\:306e\:306f\:3084\:3081\:3066\
+\:307b\:3057\:3044\:3002\:5019\:88dc\:540d\:79f0\:304c\:30ea\:30dd\:30b8\:30c8\
+\:30ea\:306b\:65e2\:306b\:5b58\:5728\:3057\:3066\:3044\:308b\:304b\:3069\:3046\
+\:304b\:3092\:30c1\:30a7\:30c3\:30af\:3057\:3066\:3001\:5b58\:5728\:3057\:3066\
+\:3044\:306a\:3051\:308c\:3070\:305d\:306e\:540d\:79f0\:3001\:5b58\:5728\:3057\
+\:3066\:3044\:308c\:3070\:3001\:4ed6\:306e\:5019\:88dc\:3092\:9078\:629e\:3057\
+\:3066\:307b\:3057\:3044\:3002\
+\>", "Text",
+ CellChangeTimes->{{3.9826965440044937`*^9, 3.9826966556266937`*^9}, {
+  3.9826978552896347`*^9, 
+  3.982697860494953*^9}},ExpressionUUID->"f43b75f7-3d74-ba45-803e-\
+0baeebab6116"],
+
+Cell["\<\
+\:521d\:3081\:304b\:3089ASCII\:306e\:307f\:3067\:30d5\:30a1\:30a4\:30eb\:540d\
+\:3092\:4ed8\:3051\:308c\:3070\:3088\:3044\:3068\:3044\:3046\:304b\:3082\:3057\
+\:308c\:306a\:3044\:3002\:65e5\:672c\:8a9e\:30cd\:30a4\:30c6\:30a3\:30d6\:306b\
+\:3068\:3063\:3066\:306f\:3001\:65e5\:672c\:8a9e\:30d5\:30a1\:30a4\:30eb\:540d\
+\:3092\:4ed8\:3051\:305f\:65b9\:304c\:660e\:3089\:304b\:306b\:898b\:3084\:3059\
+\:3044\:306e\:3067\:3001\:3053\:3053\:306f\:8b72\:308c\:306a\:3044\:3002\
+Mathematica\:306f\:30b7\:30f3\:30dc\:30eb\:306b\:65e5\:672c\:8a9e\:3092\:4f7f\
+\:3063\:3066\:3082\:554f\:984c\:306a\:3044\:305f\:3081\:3001\:5909\:6570\:3084\
+\:95a2\:6570\:540d\:306b\:3082\:65e5\:672c\:8a9e\:3092\:4f7f\:3044\:307e\:304f\
+\:3063\:3066\:3044\:308b\:304c\:3001\:660e\:3089\:304b\:306b\:53ef\:8aad\:6027\
+\:306f\:826f\:3044\:3002\[LineSeparator]\[LineSeparator]AI\:306b\:3088\:308b\
+\:7ffb\:8a33\:5909\:63db\:304c\:5bb9\:6613\:306b\:306a\:3063\:305f\:305f\:3081\
+\:3001\:7279\:306b\:554f\:984c\:306f\:751f\:3058\:306a\:3044\:3068\:601d\:3046\
+\:3002\
+\>", "SubitemParagraph",
+ CellChangeTimes->{{3.9826978832148876`*^9, 
+  3.9826980415887737`*^9}},ExpressionUUID->"9186a1ba-530d-8b4f-9a7a-\
+f31a55ca8838"]
+}, Open  ]],
+
+Cell[CellGroupData[{
+
+Cell["\:30ea\:30dd\:30b8\:30c8\:30ea\:306e\:524a\:9664\:306a\:3069", \
+"Subsubsection",
+ CellChangeTimes->{{3.982698864184519*^9, 
+  3.982698877593191*^9}},ExpressionUUID->"eeccaf13-922a-374e-bcd2-\
+9eefe6e997da"],
+
+Cell["\<\
+\:30ea\:30dd\:30b8\:30c8\:30ea\:306e\:4f5c\:6210\:95a2\:6570\:306f\:6e96\:5099\
+\:3059\:308b\:304c\:3001\:30ea\:30dd\:30b8\:30c8\:30ea\:306e\:524a\:9664\:95a2\
+\:6570\:306f\:5f53\:9762\:306f\:4f5c\:3089\:306a\:3044\:3002\[LineSeparator]\
+\:524a\:9664\:306f\:5916\:90e8\:3067\:3084\:3063\:3066\:3082\:3089\:3046\:3053\
+\:3068\:306b\:3057\:3066\:3001repo_database.json\:3092\:73fe\:72b6\:3068\:540c\
+\:671f\:3059\:308b\:95a2\:6570\:3092\:8ffd\:52a0\:3057\:3066\:304a\:304f\:3002\
+\[LineSeparator]\:95a2\:6570\:304c\:306a\:3051\:308c\:3070\:3001AI\:304c\:52d8\
+\:9055\:3044\:3067\:524a\:9664\:3059\:308b\:30ea\:30b9\:30af\:306f\:6e1b\:308b\
+(\:308f\:305f\:3057\:304c\:52d8\:9055\:3044\:3059\:308b\:30ea\:30b9\:30af\
+\:306e\:65b9\:304c\:5927\:304d\:3044\:3053\:3068\:3092\:8a8d\:8b58\:3057\:305f\
+\:3068\:304d\:306b\:524a\:9664\:3082\:4efb\:305b\:308b\:3053\:3068\:306b\:306a\
+\:308b\:3060\:308d\:3046)\:3002\
+\>", "Text",
+ CellChangeTimes->{{3.982698886576977*^9, 
+  3.9826990700917416`*^9}},ExpressionUUID->"df734047-90a6-6740-a3ca-\
+baef44dce6c9"]
+}, Open  ]]
+}, Open  ]]
+},
+WindowSize->{886, 875},
+WindowMargins->{{Automatic, 189.5}, {Automatic, 233}},
+FrontEndVersion->"14.3 for Microsoft Windows (64-bit) (2025\:5e747\:67088\
+\:65e5)",
+StyleDefinitions->"Normal use.nb",
+ExpressionUUID->"d24db182-8b2e-214b-bc15-7a2898b3d3ea"
+]
+(* End of Notebook Content *)
+
+(* Internal cache information *)
+(*CellTagsOutline
+CellTagsIndex->{}
+*)
+(*CellTagsIndex
+CellTagsIndex->{}
+*)
+(*NotebookFileOutline
+Notebook[{
+Cell[CellGroupData[{
+Cell[576, 22, 209, 4, 68, "Section",ExpressionUUID->"aaa51d95-0277-9249-8532-e1c6ef100aaf"],
+Cell[CellGroupData[{
+Cell[810, 30, 165, 3, 45, "Subsubsection",ExpressionUUID->"ffe10924-d3ab-7846-ac0c-f7f7aea6093c"],
+Cell[978, 35, 663, 11, 55, "Text",ExpressionUUID->"e137d0aa-da93-8b4e-8d87-62ad5f4f7e4c"],
+Cell[1644, 48, 949, 15, 76, "Text",ExpressionUUID->"f43b75f7-3d74-ba45-803e-0baeebab6116"],
+Cell[2596, 65, 1202, 18, 95, "SubitemParagraph",ExpressionUUID->"9186a1ba-530d-8b4f-9a7a-f31a55ca8838"]
+}, Open  ]],
+Cell[CellGroupData[{
+Cell[3835, 88, 213, 4, 45, "Subsubsection",ExpressionUUID->"eeccaf13-922a-374e-bcd2-9eefe6e997da"],
+Cell[4051, 94, 1056, 16, 98, "Text",ExpressionUUID->"df734047-90a6-6740-a3ca-baef44dce6c9"]
+}, Open  ]]
+}, Open  ]]
+}
+]
+*)
+
