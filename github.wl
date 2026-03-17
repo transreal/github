@@ -170,12 +170,17 @@ GitHubRepoDB::usage =
   "GitHubRepoDB[] \:306f GithubRepositories/repo_database.json \:3092\:8aad\:307f\:8fbc\:307f\:3001\:5168\:30ec\:30b3\:30fc\:30c9\:3092 Association \:3067\:8fd4\:3059\:3002";
 GitHubRepoDBSet::usage =
   "GitHubRepoDBSet[packageName, repoName] \:306f\:30d1\:30c3\:30b1\:30fc\:30b8\:540d\:3068 GitHub \:30ea\:30dd\:30b8\:30c8\:30ea\:540d\:306e\:5bfe\:5fdc\:3092 DB \:306b\:767b\:9332\:3059\:308b\:3002\n" <>
+  "GitHubRepoDBSet[packageName, repoName, owner] \:306f owner \:3082\:542b\:3081\:3066\:767b\:9332\:3059\:308b\:3002\n" <>
   "\:65e5\:672c\:8a9e\:30d1\:30c3\:30b1\:30fc\:30b8\:540d\:306e\:5834\:5408\:306b\:82f1\:8a9e\:30ea\:30dd\:30b8\:30c8\:30ea\:540d\:3092\:6307\:5b9a\:3059\:308b\:3002";
 GitHubRepoDBLookup::usage =
   "GitHubRepoDBLookup[packageName] \:306f DB \:304b\:3089\:30ea\:30dd\:30b8\:30c8\:30ea\:540d\:3092\:89e3\:6c7a\:3059\:308b\:3002\:672a\:767b\:9332\:306a\:3089 packageName \:3092\:305d\:306e\:307e\:307e\:8fd4\:3059\:3002";
 
 GitHubInstallPackage::usage =
   "GitHubInstallPackage[packageName] \:306f GitHub \:304b\:3089 $packageDirectory \:306b\:30d1\:30c3\:30b1\:30fc\:30b8\:3092\:521d\:56de\:30c0\:30a6\:30f3\:30ed\:30fc\:30c9\:3059\:308b\:3002\n" <>
+  "GitHubInstallPackage[packageName, url] \:306f\:4ed6\:4eba\:306e\:30ea\:30dd\:30b8\:30c8\:30ea URL \:304b\:3089\:30a4\:30f3\:30b9\:30c8\:30fc\:30eb\:3059\:308b\:3002\n" <>
+  "\:4f8b: GitHubInstallPackage[\"pkg\", \"https://github.com/user/repo\"]\n" <>
+  "\:30a4\:30f3\:30b9\:30c8\:30fc\:30eb\:5f8c\:306f GitHubUpdatePackage/GitHubCommitDataset/GitHubSubmitPullRequest \:7b49\:304c\n" <>
+  "\:30d1\:30c3\:30b1\:30fc\:30b8\:540d\:3060\:3051\:3067\:30ea\:30e2\:30fc\:30c8\:30ea\:30dd\:30b8\:30c8\:30ea\:306b\:5bfe\:3057\:3066\:52d5\:4f5c\:3059\:308b\:3002\n" <>
   "\:30aa\:30d7\:30b7\:30e7\:30f3 Owner, Repository, Branch \:6307\:5b9a\:53ef\:80fd\:3002";
 GitHubUpdatePackage::usage =
   "GitHubUpdatePackage[packageName] \:306f\:65e2\:5b58\:30d1\:30c3\:30b1\:30fc\:30b8\:3092 GitHub \:306e\:6700\:65b0\:306b\:66f4\:65b0\:3059\:308b\:3002";
@@ -244,7 +249,10 @@ ClearAll[
   iDetectNewerThanSnapshot, iSnapshotHashPath,
   iDefaultExcludePatterns, iMergedExcludePatterns,
   iCopyDirectoryPreservingExcluded,
-  iTranslateToEnglishRepoName, iSlugifyRepoName, iCheckRepoExists
+  iTranslateToEnglishRepoName, iSlugifyRepoName, iCheckRepoExists,
+  iParseGitHubURL, iRepoDBOwnerLookup,
+  iIsRemotePackage, iOriginalsDir, iSaveOriginals, iLoadOriginals,
+  iRestoreOriginalsToRepo
 ];
 
 iFailure[tag_String, msg_String, data_: <||>] :=
@@ -414,6 +422,17 @@ iResolveOwner[token_String, Automatic] :=
   ];
 
 iResolveOwner[_String, owner_String] := owner;
+
+(* 3引数版: RepoDB に owner が登録されていればそちらを優先 *)
+iResolveOwner[token_String, Automatic, packageName_String] :=
+  Module[{dbOwner},
+    dbOwner = iRepoDBOwnerLookup[packageName];
+    If[dbOwner =!= Automatic,
+      dbOwner,
+      iResolveOwner[token, Automatic]
+    ]
+  ];
+iResolveOwner[token_String, owner_String, _String] := owner;
 
 iResolveRepository[packageName_String, Automatic] := packageName;
 iResolveRepository[_String, repo_String] := repo;
@@ -685,6 +704,61 @@ iBranchIfMissing[token_String, owner_String, repo_String, branch_String, baseBra
 (* _info ディレクトリ名: packageName_info *)
 iInfoDirName[packageName_String] := packageName <> "_info";
 
+(* _info/originals ディレクトリパス *)
+iOriginalsDir[packageName_String] :=
+  FileNameJoin[{iPackageDirectory[], iInfoDirName[packageName], "originals"}];
+
+(* RepoDB に owner が登録されているリモートパッケージか判定 *)
+iIsRemotePackage[packageName_String] :=
+  Module[{db, record},
+    db = iLoadRepoDB[];
+    record = Lookup[db, packageName, <||>];
+    StringQ[Lookup[record, "owner", Automatic]]
+  ];
+
+(* doc_options.json に Originals マッピングを保存
+   mapping: {<|"repoPath" -> "README.md", "localPath" -> "pkg_info/originals/README.md"|>, ...} *)
+iSaveOriginals[packageName_String, mapping_List] :=
+  Module[{refDir, optPath, data},
+    refDir = FileNameJoin[{iPackageDirectory[], iInfoDirName[packageName], "references"}];
+    iEnsureDirectory[refDir];
+    optPath = FileNameJoin[{refDir, "doc_options.json"}];
+    data = If[FileExistsQ[optPath],
+      Quiet @ Check[Import[optPath, "RawJSON"], <||>], <||>];
+    If[!AssociationQ[data], data = <||>];
+    data["Originals"] = mapping;
+    Quiet @ Export[optPath, data, "RawJSON"];
+  ];
+
+(* doc_options.json から Originals マッピングを読み込み *)
+iLoadOriginals[packageName_String] :=
+  Module[{refDir, optPath, data},
+    refDir = FileNameJoin[{iPackageDirectory[], iInfoDirName[packageName], "references"}];
+    optPath = FileNameJoin[{refDir, "doc_options.json"}];
+    If[!FileExistsQ[optPath], Return[{}]];
+    data = Quiet @ Check[Import[optPath, "RawJSON"], <||>];
+    If[!AssociationQ[data], Return[{}]];
+    Replace[Lookup[data, "Originals", {}], Except[_List] -> {}]
+  ];
+
+(* originals/ のファイルを GithubRepositories のリポジトリフォルダへ書き戻す *)
+iRestoreOriginalsToRepo[packageName_String, localRepoDir_String] :=
+  Module[{mapping, pkgDir, src, dst, restored = {}},
+    mapping = iLoadOriginals[packageName];
+    If[Length[mapping] === 0, Return[{}]];
+    pkgDir = iPackageDirectory[];
+    Do[
+      If[AssociationQ[entry],
+        src = FileNameJoin[{pkgDir, Lookup[entry, "localPath", ""]}];
+        dst = FileNameJoin[{localRepoDir, Lookup[entry, "repoPath", ""]}];
+        If[FileExistsQ[src] && StringLength[Lookup[entry, "repoPath", ""]] > 0,
+          iEnsureDirectory[DirectoryName[dst]];
+          Quiet @ CopyFile[src, dst, OverwriteTarget -> True];
+          AppendTo[restored, Lookup[entry, "repoPath", ""]]]],
+      {entry, mapping}];
+    restored
+  ];
+
 (* upload_manifest.json のパスを返す *)
 iManifestPath[packageName_String] :=
   FileNameJoin[{iPackageDirectory[], iInfoDirName[packageName], "upload_manifest.json"}];
@@ -936,7 +1010,7 @@ iSyncReadme[packageName_String, localDir_String] :=
 (* マニフェストに基づくグループリフレッシュの内部実装 *)
 iRefreshPackageGroup[packageName_String, localDir_String] :=
   Module[{manifest, pkgDir, copiedFiles = {}, copiedDirs = {}, excludePatterns,
-          src, dst, readmeResult},
+          src, dst, readmeResult, restoredOriginals},
     manifest = iEnsureManifest[packageName];
     pkgDir = iPackageDirectory[];
     excludePatterns = iMergedExcludePatterns[packageName];
@@ -960,6 +1034,8 @@ iRefreshPackageGroup[packageName_String, localDir_String] :=
       ],
       {dir, Lookup[manifest, "directories", {}]}
     ];
+    (* originals の書き戻し: _info/originals/ → GithubRepositories/ の元の位置へ *)
+    restoredOriginals = iRestoreOriginalsToRepo[packageName, localDir];
     (* README.md の同期 *)
     readmeResult = iSyncReadme[packageName, localDir];
     <|
@@ -968,6 +1044,7 @@ iRefreshPackageGroup[packageName_String, localDir_String] :=
       "Manifest" -> manifest,
       "CopiedFiles" -> copiedFiles,
       "CopiedDirectoryFiles" -> copiedDirs,
+      "RestoredOriginals" -> restoredOriginals,
       "READMESynced" -> readmeResult
     |>
   ];
@@ -995,7 +1072,7 @@ GitHubPackageURL[packageName_String, opts:OptionsPattern[]] :=
   Module[{token, owner, repo},
     token = iAccessToken[];
     If[FailureQ[token], Return[$Failed]];
-    owner = iResolveOwner[token, OptionValue[Owner]];
+    owner = iResolveOwner[token, OptionValue[Owner], packageName];
     If[FailureQ[owner], Return[$Failed]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
@@ -1168,7 +1245,7 @@ GitHubReadFile[packageName_String, path_String, opts : OptionsPattern[]] :=
   Module[{token, owner, repo, baseBranch, branch, resp, body, content, encoding, ba, returnType},
     token = iAccessToken[];
     If[FailureQ[token], Return[token]];
-    owner = iResolveOwner[token, OptionValue[Owner]];
+    owner = iResolveOwner[token, OptionValue[Owner], packageName];
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
@@ -1219,7 +1296,7 @@ GitHubPull[packageName_String, opts : OptionsPattern[]] :=
           treeResp, entries, blobResp, blobBody, ba, localFile, pulled = 0},
     token = iAccessToken[];
     If[FailureQ[token], Return[token]];
-    owner = iResolveOwner[token, OptionValue[Owner]];
+    owner = iResolveOwner[token, OptionValue[Owner], packageName];
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
@@ -1307,7 +1384,7 @@ GitHubCommit[packageName_String, message_String, opts : OptionsPattern[]] :=
       ClaudeCode`Private`$currentUseFallback = True];
     token = iAccessToken[];
     If[FailureQ[token], Return[token]];
-    owner = iResolveOwner[token, OptionValue[Owner]];
+    owner = iResolveOwner[token, OptionValue[Owner], packageName];
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
@@ -1420,7 +1497,7 @@ GitHubCreatePullRequest[packageName_String, title_String, opts : OptionsPattern[
   Module[{token, owner, repo, head, base, resp},
     token = iAccessToken[];
     If[FailureQ[token], Return[token]];
-    owner = iResolveOwner[token, OptionValue[Owner]];
+    owner = iResolveOwner[token, OptionValue[Owner], packageName];
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
@@ -1707,6 +1784,40 @@ iCheckRepoExists[token_String, owner_String, repoName_String] :=
     !FailureQ[resp]
   ];
 
+(* GitHub URL をパースして <|"owner" -> ..., "repo" -> ...|> を返す。
+   https://github.com/owner/repo[.git][/...] を受け付ける *)
+iParseGitHubURL[url_String] :=
+  Module[{parts},
+    parts = StringCases[url,
+      RegularExpression[
+        "(?:https?://)?(?:www\\.)?github\\.com/([^/]+)/([^/.]+)"] :>
+      <|"owner" -> "$1", "repo" -> "$2"|>];
+    If[Length[parts] > 0, First[parts], $Failed]
+  ];
+
+(* RepoDB から owner を取得。登録されていなければ Automatic *)
+iRepoDBOwnerLookup[packageName_String] :=
+  Module[{db, record, ow},
+    db = iLoadRepoDB[];
+    record = Lookup[db, packageName, <||>];
+    ow = Lookup[record, "owner", Automatic];
+    If[StringQ[ow] && StringLength[ow] > 0, ow, Automatic]
+  ];
+
+(* RepoDB に owner を含めてレコードを保存 *)
+GitHubRepoDBSet[packageName_String, repoName_String, ownerName_String] :=
+  Module[{db, record},
+    db = iLoadRepoDB[];
+    record = Lookup[db, packageName, <||>];
+    record = Join[record, <|"repository" -> repoName,
+      "packageName" -> packageName,
+      "owner" -> ownerName,
+      "updatedAt" -> DateString[Now, "ISODateTime"]|>];
+    db[packageName] = record;
+    iSaveRepoDB[db];
+    record
+  ];
+
 iAutoRepoName[packageName_String] :=
   If[iIsASCIIName[packageName],
     packageName,
@@ -1790,10 +1901,11 @@ Options[GitHubInstallPackage] = {
 
 GitHubInstallPackage[packageName_String, opts:OptionsPattern[]] :=
   Module[{token, owner, repo, baseBranch, branch, localDir,
-          pullResult, pkgDir, manifest, files, dirs, src, dst, installed = {}},
+          pullResult, pkgDir, manifest, files, dirs, src, dst, installed = {},
+          isPaclet, isRemote, hasInfoDir},
     token = iAccessToken[];
     If[FailureQ[token], Return[token]];
-    owner = iResolveOwner[token, OptionValue[Owner]];
+    owner = iResolveOwner[token, OptionValue[Owner], packageName];
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
@@ -1812,31 +1924,148 @@ GitHubInstallPackage[packageName_String, opts:OptionsPattern[]] :=
     pullResult = GitHubPull[packageName, Owner -> owner, Repository -> repo,
       Branch -> branch, BaseBranch -> baseBranch, Clean -> True];
     If[FailureQ[pullResult], Return[pullResult]];
-    (* local repo から $packageDirectory へコピー *)
-    Do[
-      src = FileNameJoin[{localDir, file}];
-      If[FileExistsQ[src],
-        dst = FileNameJoin[{pkgDir, file}];
-        iEnsureDirectory[DirectoryName[dst]];
-        Quiet @ CopyFile[src, dst, OverwriteTarget -> True];
-        AppendTo[installed, file]],
-    {file, Select[
-      FileNames["*", localDir],
-      (!DirectoryQ[#] && FileNameTake[#] =!= ".gitignore") &] //
-      (FileNameTake /@ # &)}];
-    (* ディレクトリ (パクレット本体, _info) をコピー — excludePatterns を尊重 *)
-    Module[{excludePatterns = iMergedExcludePatterns[packageName]},
+    (* リポジトリの種別を判定 *)
+    isPaclet = AnyTrue[FileNames["*", localDir],
+      DirectoryQ[#] && FileExistsQ[FileNameJoin[{#, "PacletInfo.wl"}]] &];
+    isRemote = iIsRemotePackage[packageName];
+    (* claudecode 製パッケージか判定: _info フォルダが存在するか *)
+    hasInfoDir = DirectoryQ[FileNameJoin[{localDir, iInfoDirName[packageName]}]];
+
+    (* local repo から $packageDirectory へコピー — 3 パターン *)
+    Which[
+      (* ── パターン A: 自分のリポジトリ ── *)
+      (* 全ファイル・全フォルダをそのままコピー *)
+      !isRemote,
       Do[
-        src = FileNameJoin[{localDir, dir}];
-        If[DirectoryQ[src],
-          dst = FileNameJoin[{pkgDir, dir}];
-          iCopyDirectoryPreservingExcluded[src, dst, dir, excludePatterns];
-          AppendTo[installed, dir <> "/"]],
-      {dir, Select[
+        src = FileNameJoin[{localDir, file}];
+        If[FileExistsQ[src],
+          dst = FileNameJoin[{pkgDir, file}];
+          iEnsureDirectory[DirectoryName[dst]];
+          Quiet @ CopyFile[src, dst, OverwriteTarget -> True];
+          AppendTo[installed, file]],
+      {file, Select[
         FileNames["*", localDir],
-        DirectoryQ] // (FileNameTake /@ # &)}]];
+        (!DirectoryQ[#] && FileNameTake[#] =!= ".gitignore") &] //
+        (FileNameTake /@ # &)}];
+      Module[{excludePatterns = iMergedExcludePatterns[packageName]},
+        Do[
+          src = FileNameJoin[{localDir, dir}];
+          If[DirectoryQ[src],
+            dst = FileNameJoin[{pkgDir, dir}];
+            iCopyDirectoryPreservingExcluded[src, dst, dir, excludePatterns];
+            AppendTo[installed, dir <> "/"]],
+        {dir, Select[
+          FileNames["*", localDir],
+          DirectoryQ] // (FileNameTake /@ # &)}]],
+
+      (* ── パターン B: リモート + _info あり (claudecode 製 / パクレット含む) ── *)
+      (* README.md はスキップ（_info/docs/README.md と同一）。
+         それ以外のファイル・フォルダは全てそのまま $packageDirectory へコピー。
+         コミット時に iRefreshPackageGroup が docs/README.md → トップ README.md に同期する。 *)
+      hasInfoDir,
+      Do[
+        src = FileNameJoin[{localDir, file}];
+        If[FileExistsQ[src] && file =!= "README.md",
+          dst = FileNameJoin[{pkgDir, file}];
+          iEnsureDirectory[DirectoryName[dst]];
+          Quiet @ CopyFile[src, dst, OverwriteTarget -> True];
+          AppendTo[installed, file]],
+      {file, Select[
+        FileNames["*", localDir],
+        (!DirectoryQ[#] && FileNameTake[#] =!= ".gitignore") &] //
+        (FileNameTake /@ # &)}];
+      Module[{excludePatterns = iMergedExcludePatterns[packageName]},
+        Do[
+          src = FileNameJoin[{localDir, dir}];
+          If[DirectoryQ[src],
+            dst = FileNameJoin[{pkgDir, dir}];
+            iCopyDirectoryPreservingExcluded[src, dst, dir, excludePatterns];
+            AppendTo[installed, dir <> "/"]],
+          {dir, Select[
+            FileNames["*", localDir],
+            DirectoryQ] // (FileNameTake /@ # &)}]],
+
+      (* ── パターン C: リモート + _info なし (外部パッケージ) ── *)
+      (* .wl は $packageDirectory へ、それ以外は _info/originals/ へ振り分け *)
+      True,
+      Module[{originalsDir, originalsMapping = {}, allFiles, infoDir},
+        originalsDir = iOriginalsDir[packageName];
+        iEnsureDirectory[originalsDir];
+        infoDir = iInfoDirName[packageName];
+        allFiles = Select[
+          FileNames["*", localDir],
+          (!DirectoryQ[#] && FileNameTake[#] =!= ".gitignore") &] //
+          (FileNameTake /@ # &);
+        Do[
+          src = FileNameJoin[{localDir, file}];
+          If[FileExistsQ[src],
+            If[StringMatchQ[FileExtension[file], "wl", IgnoreCase -> True],
+              (* .wl ファイルは $packageDirectory へ直接コピー *)
+              dst = FileNameJoin[{pkgDir, file}];
+              iEnsureDirectory[DirectoryName[dst]];
+              Quiet @ CopyFile[src, dst, OverwriteTarget -> True];
+              AppendTo[installed, file],
+              (* その他のファイルは _info/originals/ へ *)
+              dst = FileNameJoin[{originalsDir, file}];
+              iEnsureDirectory[DirectoryName[dst]];
+              Quiet @ CopyFile[src, dst, OverwriteTarget -> True];
+              AppendTo[installed, FileNameJoin[{infoDir, "originals", file}]];
+              AppendTo[originalsMapping,
+                <|"repoPath" -> file,
+                  "localPath" -> StringReplace[
+                    FileNameJoin[{infoDir, "originals", file}], "\\" -> "/"]|>]
+            ]],
+          {file, allFiles}];
+        (* サブディレクトリも _info/originals/ へ *)
+        Do[
+          src = FileNameJoin[{localDir, dir}];
+          If[DirectoryQ[src],
+            Module[{subFiles, relPath},
+              subFiles = FileNames["**", src];
+              Do[
+                If[!DirectoryQ[sf],
+                  relPath = FileNameDrop[sf, FileNameDepth[localDir]];
+                  dst = FileNameJoin[{originalsDir, relPath}];
+                  iEnsureDirectory[DirectoryName[dst]];
+                  Quiet @ CopyFile[sf, dst, OverwriteTarget -> True];
+                  AppendTo[originalsMapping,
+                    <|"repoPath" -> StringReplace[relPath, "\\" -> "/"],
+                      "localPath" -> StringReplace[
+                        FileNameJoin[{infoDir, "originals", relPath}], "\\" -> "/"]|>]],
+                {sf, subFiles}];
+              AppendTo[installed, FileNameJoin[{infoDir, "originals", dir}] <> "/"]
+            ]],
+          {dir, Select[
+            FileNames["*", localDir],
+            DirectoryQ] // (FileNameTake /@ # &)}];
+        (* Originals マッピングを doc_options.json に保存 *)
+        iSaveOriginals[packageName, originalsMapping];
+        Print["\:2139 \:5916\:90e8\:30d1\:30c3\:30b1\:30fc\:30b8: \:975e .wl \:30d5\:30a1\:30a4\:30eb\:3092 " <> originalsDir <> " \:306b\:914d\:7f6e (" <>
+          ToString[Length[originalsMapping]] <> " \:30d5\:30a1\:30a4\:30eb)"]
+      ]
+    ];
     <|"Package" -> packageName, "Owner" -> owner, "Repository" -> repo,
       "Branch" -> branch, "InstalledTo" -> pkgDir, "Items" -> installed|>
+  ];
+
+(* URL 付き2引数版: 他人のリポジトリからインストール *)
+GitHubInstallPackage[packageName_String, url_String, opts:OptionsPattern[]] :=
+  Module[{parsed, remoteOwner, remoteRepo},
+    parsed = iParseGitHubURL[url];
+    If[FailureQ[parsed],
+      Return[iFailure["InvalidURL",
+        "GitHub URL \:3092\:30d1\:30fc\:30b9\:3067\:304d\:307e\:305b\:3093: " <> url <>
+        "\n\:5f62\:5f0f: https://github.com/owner/repo"]]];
+    remoteOwner = parsed["owner"];
+    remoteRepo = parsed["repo"];
+    (* RepoDB に owner + repository を登録 *)
+    GitHubRepoDBSet[packageName, remoteRepo, remoteOwner];
+    Print["\:30ea\:30e2\:30fc\:30c8\:30ea\:30dd\:30b8\:30c8\:30ea\:3092\:767b\:9332: " <> remoteOwner <> "/" <> remoteRepo <>
+      " \[RightArrow] " <> packageName];
+    (* Owner と Repository を明示的に指定して既存の InstallPackage に委譲 *)
+    GitHubInstallPackage[packageName,
+      Owner -> remoteOwner, Repository -> remoteRepo,
+      Sequence @@ FilterRules[{opts}, Except[Owner | Repository]]]
   ];
 
 Options[GitHubUpdatePackage] = {
@@ -1861,7 +2090,7 @@ GitHubListPullRequests[packageName_String, opts:OptionsPattern[]] :=
   Module[{token, owner, repo, resp, prs, sorted},
     token = iAccessToken[];
     If[FailureQ[token], Return[token]];
-    owner = iResolveOwner[token, OptionValue[Owner]];
+    owner = iResolveOwner[token, OptionValue[Owner], packageName];
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
@@ -1991,7 +2220,7 @@ GitHubMergePullRequest[packageName_String, prNumber_Integer, reason_String:"",
   Module[{token, owner, repo, resp, commentResp},
     token = iAccessToken[];
     If[FailureQ[token], Return[token]];
-    owner = iResolveOwner[token, OptionValue[Owner]];
+    owner = iResolveOwner[token, OptionValue[Owner], packageName];
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
@@ -2022,7 +2251,7 @@ GitHubClosePullRequest[packageName_String, prNumber_Integer, reason_String:"",
   Module[{token, owner, repo, resp, commentResp},
     token = iAccessToken[];
     If[FailureQ[token], Return[token]];
-    owner = iResolveOwner[token, OptionValue[Owner]];
+    owner = iResolveOwner[token, OptionValue[Owner], packageName];
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
@@ -2058,7 +2287,7 @@ GitHubReviewPullRequest[packageName_String, prNumber_Integer, opts:OptionsPatter
     WithCleanup[Null,
     token = iAccessToken[];
     If[FailureQ[token], Return[token]];
-    owner = iResolveOwner[token, OptionValue[Owner]];
+    owner = iResolveOwner[token, OptionValue[Owner], packageName];
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
@@ -2142,7 +2371,7 @@ GitHubListCommits[packageName_String, opts:OptionsPattern[]] :=
   Module[{token, owner, repo, baseBranch, branch, resp, commits, maxN},
     token = iAccessToken[];
     If[FailureQ[token], Return[token]];
-    owner = iResolveOwner[token, OptionValue[Owner]];
+    owner = iResolveOwner[token, OptionValue[Owner], packageName];
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
@@ -2564,7 +2793,7 @@ iGitHubPullAtCommit[packageName_String, commitSHA_String, opts:OptionsPattern[]]
           snapshotResult, copyResult, snapshotSaved = False},
     token = iAccessToken[];
     If[FailureQ[token], Return[token]];
-    owner = iResolveOwner[token, OptionValue[Owner]];
+    owner = iResolveOwner[token, OptionValue[Owner], packageName];
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
@@ -2636,7 +2865,7 @@ GitHubReviewCommit[packageName_String, commitSHA_String, opts:OptionsPattern[]] 
     WithCleanup[Null,
     token = iAccessToken[];
     If[FailureQ[token], Return[token]];
-    owner = iResolveOwner[token, OptionValue[Owner]];
+    owner = iResolveOwner[token, OptionValue[Owner], packageName];
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
@@ -2718,7 +2947,7 @@ GitHubRevertCommit[packageName_String, commitSHA_String, reason_String:"",
           headRef, headSHA, newCommitMsg, newCommit, updateResp},
     token = iAccessToken[];
     If[FailureQ[token], Return[token]];
-    owner = iResolveOwner[token, OptionValue[Owner]];
+    owner = iResolveOwner[token, OptionValue[Owner], packageName];
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
@@ -2774,6 +3003,7 @@ Print[
   "  GitHubPackageURL[package]                \[RightArrow] パッケージの GitHub URL\n" <>
   "  GitHubPackageURLs[]                      \[RightArrow] 全パッケージの GitHub URL 一覧\n" <>
   "  GitHubInstallPackage[package]            \[RightArrow] GitHub から $packageDirectory へ初回ダウンロード\n" <>
+  "  GitHubInstallPackage[package, url]       \[RightArrow] 他人のリポジトリからインストール\n" <>
   "  GitHubUpdatePackage[package]             \[RightArrow] パッケージを GitHub 最新に更新\n" <>
   "  GitHubPullRequestDataset[package]        \[RightArrow] PR 一覧 (Review/Merge/Close ボタン付き)\n" <>
   "  GitHubCommitDataset[package]             \[RightArrow] コミット履歴 (Review/Pull/Revert ボタン付き)\n" <>
@@ -2801,7 +3031,13 @@ Print[
   "\n--- インストール (初回) ---\n" <>
   "  1. claudecode.wl, NBAccess.wl, github.wl を $packageDirectory に手動配置\n" <>
   "  2. Block[{$CharacterEncoding = \"UTF-8\"}, Needs[\"GitHubREST`\", \"github.wl\"]]\n" <>
-  "  3. GitHubInstallPackage[\"other-package\"] で他パッケージをダウンロード\n" <>
+  "  3. GitHubInstallPackage[\"other-package\"] で自分のパッケージをダウンロード\n" <>
+  "  4. GitHubInstallPackage[\"pkg\", \"https://github.com/user/repo\"] で他人のリポジトリをインストール\n" <>
+  "\n--- 他人のリポジトリを使う流れ ---\n" <>
+  "  GitHubInstallPackage[\"pkg\", \"https://github.com/alice/repo\"]\n" <>
+  "  GitHubUpdatePackage[\"pkg\"]                              \[RightArrow] 最新を pull\n" <>
+  "  GitHubCommitDataset[\"pkg\"]                              \[RightArrow] コミット履歴を確認\n" <>
+  "  GitHubSubmitPullRequest[\"pkg\", \"Fix\", \"Bug fix\"]        \[RightArrow] PR 送信\n" <>
   "\n--- よく使う流れ ---\n" <>
   "  GitHubCreateRepository[\"fact\", Public -> False]\n" <>
   "  GitHubRefreshAndCommit[\"fact\", \"Update fact\"]\n" <>

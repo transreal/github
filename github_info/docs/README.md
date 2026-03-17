@@ -40,6 +40,20 @@ GitHub リポジトリ名には ASCII 文字しか使えないため、日本語
 
 `GitHubCommitDataset` は、コミット履歴を Review / Pull / Revert の**ボタン付き Grid** として表示します。特定コミットのファイルをローカルに取得して検証したり、変更を打ち消すリバートコミットを作成したりする操作がノートブック上で完結します。
 
+### 他人のリポジトリのインストール管理
+
+`GitHubInstallPackage[packageName, url]` の 2 引数版を使うと、GitHub URL を直接指定して他者のリポジトリをインストールできます。インストール時に owner・repository 名が `repo_database.json` へ自動登録されるため、以後は `packageName` だけで `GitHubUpdatePackage` や `GitHubCommitDataset` などの操作が可能になります。
+
+インストール先の振り分けはリポジトリの種別によって自動判定されます。
+
+| パターン | 条件 | 動作 |
+|---------|------|------|
+| A (自分のリポジトリ) | RepoDB に owner が登録されていない | 全ファイル・全フォルダをそのまま `$packageDirectory` へコピー |
+| B (リモート + `_info` あり) | RepoDB に owner 登録あり、`packageName_info/` フォルダが存在 | README.md を除く全ファイルを `$packageDirectory` へコピー |
+| C (リモート + `_info` なし) | RepoDB に owner 登録あり、`_info` フォルダなし | `.wl` のみ `$packageDirectory` へ、それ以外は `_info/originals/` に保存 |
+
+パターン C の場合、非 `.wl` ファイル（README 等）は `packageName_info/originals/` へ振り分けられ、`doc_options.json` にマッピングが保存されます。コミット時に `iRestoreOriginalsToRepo` が元の位置へ書き戻します。
+
 ---
 
 ## 詳細説明
@@ -143,15 +157,19 @@ GitHubPullRequestDataset["mypackage"]
 (* 7. コミット履歴を表示（ボタン付き Grid） *)
 GitHubCommitDataset["mypackage"]
 
-(* 8. 他のパッケージをインストール *)
+(* 8. 自分のパッケージをダウンロード *)
 GitHubInstallPackage["fact", Owner -> "transreal"]
+
+(* 9. 他人のリポジトリを URL 指定でインストール *)
+GitHubInstallPackage["pkg", "https://github.com/alice/repo"]
+(* -> owner と repository が repo_database.json に自動登録される *)
 ```
 
 **主要オプション（既定値）:**
 
 | オプション | 既定値 | 説明 |
 |-----------|--------|------|
-| `Owner` | `Automatic` | GitHub ユーザー名（省略時はトークンから自動取得） |
+| `Owner` | `Automatic` | GitHub ユーザー名（省略時はトークンから自動取得、または RepoDB から解決） |
 | `Repository` | `Automatic` | リポジトリ名（省略時は packageName） |
 | `Branch` | `Automatic` | 操作対象ブランチ |
 | `BaseBranch` | `Automatic` | デフォルトブランチ（API から自動取得） |
@@ -171,7 +189,7 @@ GitHubInstallPackage["fact", Owner -> "transreal"]
 #### マニフェスト / ローカル同期
 
 - **`GitHubReadManifest[name]`** — `packageName_info/upload_manifest.json` を読む（不在時は自動生成）
-- **`GitHubRefreshLocalPackageGroup[name]`** — マニフェストに従いファイルをローカル作業フォルダへコピー
+- **`GitHubRefreshLocalPackageGroup[name]`** — マニフェストに従いファイルをローカル作業フォルダへコピー。`_info/originals/` の内容を元のリポジトリパスへ書き戻す処理（`iRestoreOriginalsToRepo`）も実行する
 - **`GitHubRefreshLocalPackage[name]`** — `.wl` 単体をローカルへコピー（後方互換用）
 
 #### リポジトリ操作
@@ -213,20 +231,33 @@ GitHubRevertCommit["mypackage", "a1b2c3d4e5f6...", "バグ修正を差し戻し"
 
 - **`GitHubRepoDB[]`** — `repo_database.json` の全レコードを返す
 - **`GitHubRepoDBSet[name, repoName]`** — パッケージ名 → リポジトリ名の対応を登録
+- **`GitHubRepoDBSet[name, repoName, owner]`** — パッケージ名 → リポジトリ名 + owner を登録。他人のリポジトリをインストールする際に `GitHubInstallPackage[name, url]` が自動的に呼び出す
 - **`GitHubRepoDBLookup[name]`** — DB からリポジトリ名を解決（未登録なら `name` をそのまま返す）
 
-未登録の非 ASCII パッケージ名は [claudecode](https://github.com/transreal/claudecode) の Claude API を呼び出して意味のある英語リポジトリ名を 3 候補生成し、GitHub 上の重複を確認した上で自動登録します。
+未登録の非 ASCII パッケージ名は [claudecode](https://github.com/transreal/claudecode) の Claude API を呼び出して意味のある英語リポジトリ名を 3 候補生成し、GitHub 上の重複を確認した上で自動登録します。RepoDB に `owner` が登録されている場合、`iResolveOwner` はトークンからの自動取得よりも RepoDB の値を優先します。
 
 ```wolfram
 (* 日本語パッケージ名に英語リポジトリ名を登録する例 *)
 GitHubRepoDBSet["情報工学科時間割", "pkg-094d20d0"]
 GitHubRepoDBLookup["情報工学科時間割"]
 (* -> "pkg-094d20d0" *)
+
+(* owner も含めて登録する例 *)
+GitHubRepoDBSet["fact", "fact", "transreal"]
 ```
 
 #### パッケージ管理
 
-- **`GitHubInstallPackage[name]`** — GitHub から `$packageDirectory` へ初回ダウンロード
+- **`GitHubInstallPackage[name]`** — GitHub から `$packageDirectory` へ初回ダウンロード。`Owner` オプションで所有者を指定可能
+- **`GitHubInstallPackage[name, url]`** — GitHub URL を直接指定して他者のリポジトリをインストール。`url` から owner・repository 名を解析して `repo_database.json` に自動登録し、以後はパッケージ名だけで操作できる
+
+  ```wolfram
+  (* 他人のリポジトリを URL 指定でインストール *)
+  GitHubInstallPackage["fact", "https://github.com/transreal/fact"]
+  (* リモートリポジトリを登録: transreal/fact -> fact *)
+  (* インストール後は GitHubUpdatePackage["fact"] などが利用可能 *)
+  ```
+
 - **`GitHubUpdatePackage[name]`** — 既存パッケージを GitHub 最新版に更新
 
 #### グローバル変数

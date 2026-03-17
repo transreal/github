@@ -59,6 +59,7 @@
 |---|---|---|
 | `GitHubRepoDB[]` | `Association` | `repo_database.json` の全レコードを返す |
 | `GitHubRepoDBSet[name, repoName]` | — | パッケージ名 → リポジトリ名の対応を DB に登録する |
+| `GitHubRepoDBSet[name, repoName, owner]` | — | パッケージ名 → リポジトリ名 + owner を DB に登録する。他人のリポジトリを `GitHubInstallPackage[name, url]` でインストールした際に自動呼び出される |
 | `GitHubRepoDBLookup[name]` | `String` | DB からリポジトリ名を解決（未登録なら `name` をそのまま返す） |
 
 非 ASCII パッケージ名で `Repository -> Automatic` の場合、Claude API (`iTranslateToEnglishRepoName`) を呼び出して意味のある英語リポジトリ名を自動生成し DB に登録する。GitHub 上の重複も自動回避する。`Fallback -> True` を指定すると Claude Code が利用できない場合に `Transliterate` にフォールバックする。
@@ -67,8 +68,14 @@
 
 | シグネチャ | 戻り値 | 説明 |
 |---|---|---|
-| `GitHubInstallPackage[name]` | — | GitHub から `$packageDirectory` へ初回ダウンロード |
+| `GitHubInstallPackage[name]` | — | GitHub から `$packageDirectory` へ初回ダウンロード。自分のリポジトリ（RepoDB に owner 未登録）の場合は全ファイルをそのままコピー |
+| `GitHubInstallPackage[name, url]` | — | 他人のリポジトリ URL からインストール。URL をパースして owner/repo を RepoDB に登録し、以降は `name` だけで操作できる。非 `.wl` ファイルは `name_info/originals/` に振り分けられ、コミット時に元の位置へ書き戻される |
 | `GitHubUpdatePackage[name]` | — | 既存パッケージを GitHub 最新版に更新 |
+
+`GitHubInstallPackage` のコピー先振り分けルール:
+- **パターン A（自分のリポジトリ）**: 全ファイル・全フォルダを `$packageDirectory` へそのままコピー
+- **パターン B（リモート + `_info` フォルダあり）**: `README.md` をスキップし、それ以外を `$packageDirectory` へコピー
+- **パターン C（リモート + `_info` フォルダなし）**: `.wl` は `$packageDirectory` へ直接コピー、その他は `name_info/originals/` へ格納し `doc_options.json` にマッピングを保存
 
 ### グローバル変数
 
@@ -82,7 +89,7 @@
 
 | オプション | 既定値 | 対象関数 | 説明 |
 |---|---|---|---|
-| `Owner` | `Automatic` | 全般 | GitHub オーナー名（Automatic → トークンから自動取得） |
+| `Owner` | `Automatic` | 全般 | GitHub オーナー名（Automatic → RepoDB に登録があればそちらを優先、なければトークンから自動取得） |
 | `Repository` | `Automatic` | 全般 | リポジトリ名（Automatic → `packageName` または DB を使用） |
 | `Branch` | `Automatic` | Commit/Pull/PR/Revert | 操作対象ブランチ |
 | `BaseBranch` | `Automatic` | Commit/PR/Revert | ベースブランチ（Automatic → default branch） |

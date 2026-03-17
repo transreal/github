@@ -138,15 +138,30 @@ GitHubListPullRequests["myPackage"]
 日本語名のパッケージと英語リポジトリ名の対応を登録します。
 日本語パッケージ名を初めて使用する際は、Claude API を利用して意味のある英語リポジトリ名を自動生成し、重複チェックを行ったうえで登録します。
 
+### 2引数版（リポジトリ名のみ登録）
+
 ```wolfram
 GitHubRepoDBSet["情報工学科時間割", "pkg-094d20d0"]
 GitHubRepoDBLookup["情報工学科時間割"]
 (* "pkg-094d20d0" *)
 ```
 
+### 3引数版（owner も含めて登録）
+
+他人のリポジトリをパッケージ名で管理する場合は、`owner` も合わせて登録します。
+登録後は `GitHubInstallPackage` などがパッケージ名だけでリモートリポジトリを参照できるようになります。
+
+```wolfram
+GitHubRepoDBSet["ResistorBuilder", "ResistorBuilder", "dzhang314"]
+GitHubRepoDBLookup["ResistorBuilder"]
+(* "ResistorBuilder" *)
+```
+
 ---
 
 ## 8. パッケージのインストール・更新
+
+### 自分のパッケージをダウンロード
 
 ```wolfram
 (* GitHub から $packageDirectory へ初回ダウンロード *)
@@ -155,6 +170,39 @@ GitHubInstallPackage["fact"]
 (* 既存パッケージを最新版に更新 *)
 GitHubUpdatePackage["fact"]
 ```
+
+### 他人のリポジトリをインストール
+
+URL を直接指定して他人のリポジトリをインストールできます。
+インストール時に `owner` と `repository` がリポジトリ名データベースへ自動登録されるため、以降は `GitHubUpdatePackage`・`GitHubCommitDataset`・`GitHubSubmitPullRequest` などをパッケージ名だけで操作できます。
+
+```wolfram
+GitHubInstallPackage["ResistorBuilder", "https://github.com/dzhang314/ResistorBuilder"]
+```
+
+インストール後の操作例:
+
+```wolfram
+(* 最新版に更新 *)
+GitHubUpdatePackage["ResistorBuilder"]
+
+(* コミット履歴を確認 *)
+GitHubCommitDataset["ResistorBuilder"]
+
+(* PR を送信 *)
+GitHubSubmitPullRequest["ResistorBuilder", "Fix", "Bug fix"]
+```
+
+### 外部パッケージのファイル配置について
+
+外部パッケージ（`_info` フォルダを持たないリポジトリ）をインストールした場合、ファイルは次のように振り分けられます。
+
+| ファイル種別 | 配置先 |
+|---|---|
+| `.wl` ファイル | `$packageDirectory` 直下 |
+| その他のファイル・フォルダ | `$packageDirectory/<pkg>_info/originals/` |
+
+この `originals/` に保存されたファイルは、次回 `GitHubRefreshAndCommit` 実行時にリポジトリへ自動的に書き戻されます。
 
 ---
 
@@ -238,4 +286,5 @@ $GitHubLicenseHolder = "Katsunobu Imai"
 | 文字化け | `Block[{$CharacterEncoding="UTF-8"}, ...]` で読み込む |
 | リポジトリが見つからない | `GitHubRepoDBSet` で名前対応を登録 |
 | 日本語パッケージ名のリポジトリ名自動生成が失敗する | [claudecode](https://github.com/transreal/claudecode) が利用可能か確認するか、`GitHubRepoDBSet` で手動登録する |
+| 他人のリポジトリをインストール後に操作できない | `GitHubRepoDBSet["pkg", "repo", "owner"]` で owner を含めて登録する |
 | 過去コミットに巻き戻した後、元の作業ファイルに戻したい | `GitHubCommitDataset` の #0 行「Pull」ボタンでローカル最新版スナップショットに復元する |

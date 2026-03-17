@@ -16,7 +16,7 @@ Needs["GitHubREST`", FileNameJoin[{$packageDirectory, "github_fixed.wl"}]]
 ## 1. URL・リポジトリ情報
 
 ### `GitHubPackageURL`
-`$packageDirectory` 内のパッケージの GitHub URL を返す。
+`$packageDirectory` 内のパッケージの GitHub URL を返します。
 
 ```mathematica
 GitHubPackageURL["claudecode"]
@@ -28,7 +28,7 @@ GitHubPackageURL["claudecode"]
 ---
 
 ### `GitHubPackageURLs`
-`$packageDirectory` 内の全パッケージの `<|name -> url, ...|>` を返す。
+`$packageDirectory` 内の全パッケージの `<|name -> url, ...|>` を返します。
 
 ```mathematica
 GitHubPackageURLs[]
@@ -40,7 +40,7 @@ GitHubPackageURLs[]
 ## 2. ローカルリポジトリ管理
 
 ### `GitHubRepoPath`
-ローカル作業フォルダのパスを返す（作成はしない）。
+ローカル作業フォルダのパスを返します（作成はしません）。
 
 ```mathematica
 GitHubRepoPath["mypackage"]
@@ -50,7 +50,7 @@ GitHubRepoPath["mypackage"]
 ---
 
 ### `GitHubEnsureLocalRepo`
-ローカル作業フォルダを作成して返す。
+ローカル作業フォルダを作成して返します。
 
 ```mathematica
 GitHubEnsureLocalRepo["mypackage"]
@@ -62,7 +62,7 @@ GitHubEnsureLocalRepo["mypackage"]
 ---
 
 ### `GitHubReadManifest`
-`packageName_info/upload_manifest.json` を読み、アップロード対象ファイル一覧を返す。ファイルが存在しない場合は自動生成します。
+`packageName_info/upload_manifest.json` を読み、アップロード対象ファイル一覧を返します。ファイルが存在しない場合は自動生成します。
 
 ```mathematica
 GitHubReadManifest["mypackage"]
@@ -72,7 +72,7 @@ GitHubReadManifest["mypackage"]
 ---
 
 ### `GitHubRefreshLocalPackageGroup`
-`upload_manifest.json` に基づき対象ファイル群をローカル作業フォルダへコピーします。`_info/docs/README.md` が存在すればトップレベル `README.md` として配置します。
+`upload_manifest.json` に基づき対象ファイル群をローカル作業フォルダへコピーします。`_info/docs/README.md` が存在すればトップレベル `README.md` として配置します。また `_info/originals/` に保存されているファイルをリポジトリフォルダへ書き戻します。
 
 ```mathematica
 GitHubRefreshLocalPackageGroup["mypackage"]
@@ -265,12 +265,34 @@ GitHubRevertCommit["mypackage", "a1b2c3d", "誤った変更のリバート"]
 ## 6. パッケージインストール・更新
 
 ### `GitHubInstallPackage`
-GitHub から `$packageDirectory` へパッケージを初回ダウンロードします。
+GitHub から `$packageDirectory` へパッケージをダウンロードします。
+
+**1引数版（自分のリポジトリ）:**
 
 ```mathematica
 GitHubInstallPackage["claudecode"]
 GitHubInstallPackage["mypackage", Owner -> "myorg", Branch -> "main"]
 ```
+
+**2引数版（他人のリポジトリ URL を指定）:**
+
+```mathematica
+GitHubInstallPackage["pkg", "https://github.com/alice/repo"]
+```
+
+URL を指定すると、owner と repository 名を自動的にパースして `repo_database.json` に登録します。以降は `GitHubUpdatePackage["pkg"]`・`GitHubCommitDataset["pkg"]`・`GitHubSubmitPullRequest["pkg", ...]` などをパッケージ名だけで操作できます。
+
+**インストール時のコピー動作:**
+
+インストール先のファイル構成に応じて、以下の 3 パターンで `$packageDirectory` へファイルをコピーします。
+
+| パターン | 条件 | 動作 |
+|---|---|---|
+| A（自分のリポジトリ） | RepoDB に owner 登録なし | 全ファイル・全フォルダをそのままコピー |
+| B（リモート + `_info` あり） | RepoDB に owner 登録あり かつ `_info` フォルダが存在 | `README.md` を除く全ファイル・全フォルダをコピー（`excludePatterns` を尊重） |
+| C（リモート + `_info` なし） | RepoDB に owner 登録あり かつ `_info` フォルダが存在しない | `.wl` ファイルのみ `$packageDirectory` へ、その他は `_info/originals/` に振り分け |
+
+パターン C では、非 `.wl` ファイルの配置情報が `_info/references/doc_options.json` の `Originals` フィールドに保存されます。次回コミット時に `iRefreshPackageGroup` が `_info/originals/` から元の位置へ自動的に書き戻します。
 
 ---
 
@@ -302,8 +324,18 @@ GitHubRepoDB[]
 ### `GitHubRepoDBSet`
 パッケージ名とリポジトリ名の対応を DB に登録します。
 
+**2引数版:**
+
 ```mathematica
 GitHubRepoDBSet["情報工学科時間割", "timetable-cs-dept"]
+```
+
+**3引数版（owner も含めて登録）:**
+
+他人のリポジトリをインストールする際など、owner を明示して登録する場合に使用します。`GitHubInstallPackage[packageName, url]` は内部でこの 3 引数版を自動的に呼び出します。
+
+```mathematica
+GitHubRepoDBSet["pkg", "repo-name", "alice"]
 ```
 
 ---
@@ -332,11 +364,25 @@ $GitHubLicenseHolder = "Katsunobu Imai"
 
 ---
 
-## 9. 主要オプション一覧
+## 9. 他人のリポジトリを使う流れ
+
+```mathematica
+(* 1. 初回インストール: URL を指定して owner/repo を自動登録 *)
+GitHubInstallPackage["pkg", "https://github.com/alice/repo"]
+
+(* 2. 以降はパッケージ名だけで操作可能 *)
+GitHubUpdatePackage["pkg"]                              (* 最新を pull *)
+GitHubCommitDataset["pkg"]                              (* コミット履歴を確認 *)
+GitHubSubmitPullRequest["pkg", "Fix", "Bug fix"]        (* PR 送信 *)
+```
+
+---
+
+## 10. 主要オプション一覧
 
 | オプション | 既定値 | 説明 |
 |---|---|---|
-| `Owner` | `Automatic` | GitHub オーナー名（Automatic でトークンから取得） |
+| `Owner` | `Automatic` | GitHub オーナー名（Automatic でトークンから取得、RepoDB に登録があればそちらを優先） |
 | `Repository` | `Automatic` | リポジトリ名（Automatic で packageName を使用） |
 | `Branch` | `Automatic` | 操作対象ブランチ |
 | `BaseBranch` | `Automatic` | ベースブランチ（デフォルトブランチを自動取得） |

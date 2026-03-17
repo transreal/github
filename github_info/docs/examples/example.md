@@ -1,7 +1,3 @@
-以下が `examples/example.md` の内容です（ファイル書き込みの許可をいただければ保存します）:
-
----
-
 # GitHubREST` 使用例
 
 ## 1. パッケージの GitHub URL を取得する
@@ -30,7 +26,7 @@ GitHubCreateRepository["mypackage", Public -> True,
   Description -> "My Wolfram package"]
 ```
 
-**出力例:** `"main"`（作成後の default branch 名）
+**出力例:** `<|"Package" -> "mypackage", "Owner" -> "transreal", "DefaultBranch" -> "main", ...|>`
 
 ---
 
@@ -50,25 +46,38 @@ GitHubRefreshAndCommit["mypackage", "fix: バグ修正"]
 GitHubPull["mypackage"]
 ```
 
-**出力例:** `"/path/to/GithubRepositories/mypackage"`（ローカルパス）
+**出力例:** `<|"Package" -> "mypackage", "LocalRepoPath" -> "/path/to/GithubRepositories/mypackage", "FilesPulled" -> 5, ...|>`
 
 ---
 
 ## 5. パッケージをインストール／更新する
 
-```mathematica
-(* 初回インストール *)
-GitHubInstallPackage["NBAccess", Owner -> "transreal"]
-```
-
-**出力例:** `"/path/to/$packageDirectory/NBAccess.wl"`
+### 5-1. 自分のパッケージを初回インストール
 
 ```mathematica
-(* 最新版に更新 *)
-GitHubUpdatePackage["NBAccess"]
+(* 自分の GitHub アカウントに紐づいたパッケージをダウンロード *)
+GitHubInstallPackage["NBAccess"]
 ```
 
-**出力例:** `"/path/to/$packageDirectory/NBAccess.wl"`
+**出力例:** `<|"Package" -> "NBAccess", "InstalledTo" -> "/path/to/$packageDirectory", "Items" -> {"NBAccess.wl", "NBAccess_info/"}, ...|>`
+
+### 5-2. 他人のリポジトリを URL 指定でインストール（新機能）
+
+```mathematica
+(* GitHub URL を直接指定して他人のリポジトリをインストール *)
+GitHubInstallPackage["ResistorBuilder", "https://github.com/dzhang314/ResistorBuilder"]
+```
+
+**出力例:** `<|"Package" -> "ResistorBuilder", "Owner" -> "dzhang314", "Repository" -> "ResistorBuilder", "InstalledTo" -> "/path/to/$packageDirectory", ...|>`
+
+インストール後は `GitHubUpdatePackage`・`GitHubCommitDataset`・`GitHubSubmitPullRequest` 等がパッケージ名だけで動作します。
+
+```mathematica
+(* インストール済みパッケージを最新版に更新 *)
+GitHubUpdatePackage["ResistorBuilder"]
+```
+
+**出力例:** `<|"Package" -> "ResistorBuilder", "InstalledTo" -> "/path/to/$packageDirectory", ...|>`
 
 ---
 
@@ -103,16 +112,47 @@ GitHubMergePullRequest["mypackage", 3, "スカッシュマージ"]
 
 ## 8. リポジトリ名データベースを管理する（日本語パッケージ名の対応）
 
+### 8-1. リポジトリ名のみ登録（2引数版）
+
 ```mathematica
 (* 日本語パッケージ名に英語リポジトリ名を登録 *)
-GitHubRepoDBSet["情報工学科時間割", "pkg-094d20d0"]
+GitHubRepoDBSet["情報工学科時間割", "jouhou-timetable"]
 GitHubRepoDBLookup["情報工学科時間割"]
 ```
 
-**出力例:** `"pkg-094d20d0"`
+**出力例:** `"jouhou-timetable"`
+
+### 8-2. owner を含めて登録（3引数版・新機能）
+
+他人のリポジトリを管理する場合は owner も一緒に登録できます。
+
+```mathematica
+(* owner を含めて登録することで、以降の操作で owner を自動解決できる *)
+GitHubRepoDBSet["ResistorBuilder", "ResistorBuilder", "dzhang314"]
+GitHubRepoDBLookup["ResistorBuilder"]
+```
+
+**出力例:** `"ResistorBuilder"`
 
 ```mathematica
 GitHubRepoDB[]
 ```
 
-**出力例:** `<|"情報工学科時間割" -> "pkg-094d20d0", "模範解答" -> "pkg-32114038", ...|>`
+**出力例:** `<|"情報工学科時間割" -> <|"repository" -> "jouhou-timetable", "packageName" -> "情報工学科時間割", ...|>, "ResistorBuilder" -> <|"repository" -> "ResistorBuilder", "owner" -> "dzhang314", ...|>, ...|>`
+
+---
+
+## 9. 他人のリポジトリを使う典型的な流れ
+
+```mathematica
+(* 1. URL を指定して初回インストール（owner と repository が自動登録される） *)
+GitHubInstallPackage["ResistorBuilder", "https://github.com/dzhang314/ResistorBuilder"]
+
+(* 2. 最新版に更新 *)
+GitHubUpdatePackage["ResistorBuilder"]
+
+(* 3. コミット履歴を確認（Review/Pull/Revert ボタン付き） *)
+GitHubCommitDataset["ResistorBuilder"]
+
+(* 4. 変更提案を Pull Request として送信 *)
+GitHubSubmitPullRequest["ResistorBuilder", "Fix: バグ修正", "詳細な変更内容"]
