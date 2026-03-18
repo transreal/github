@@ -238,9 +238,9 @@ GitHubRevertCommit["mypackage", "a1b2c3d4e5f6...", "バグ修正を差し戻し"
 
 ```wolfram
 (* 日本語パッケージ名に英語リポジトリ名を登録する例 *)
-GitHubRepoDBSet["情報工学科時間割", "pkg-094d20d0"]
+GitHubRepoDBSet["情報工学科時間割", "jouhou-timetable"]
 GitHubRepoDBLookup["情報工学科時間割"]
-(* -> "pkg-094d20d0" *)
+(* -> "jouhou-timetable" *)
 
 (* owner も含めて登録する例 *)
 GitHubRepoDBSet["fact", "fact", "transreal"]
