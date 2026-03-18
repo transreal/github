@@ -135,3 +135,13 @@
 | `Body` | `""` | `GitHubCreatePullRequest` | PR 本文 |
 | `Draft` | `False` | `GitHubCreatePullRequest` | ドラフト PR として作成するか |
 | `MaintainerCanModify` | `True` | `GitHubCreatePullRequest` | maintainer による head 編集を許可するか |
+
+### エラーハンドリング / フォールバック
+
+| オプション | 既定値 | 対象関数 | 説明 |
+|---|---|---|---|
+| `Fallback` | `False` | 全公開関数 | `True` にすると Claude Code が利用不可の場合にフォールバック処理を有効化する。リポジトリ名の自動翻訳（非 ASCII パッケージ名）等で Claude API を呼ぶ際に、代替モデルや `Transliterate` へのフォールバックを許可する。`False`（既定）の場合は API エラー時に `Failure` を返して処理を停止する |
+
+## 内部実装メモ（パス操作）
+
+ファイルパス操作は `FileNameSplit` / `FileNameJoin` を使用し、OS 依存の `$PathnameSeparator` や `"\\"` による文字列置換を行わない。Git パス（スラッシュ区切り）への変換は `iNormalizeGitPath` が `FileNameSplit` + `"/"` 結合で処理する。これにより Windows / macOS / Linux 間でのパス不整合を防止している。

@@ -466,7 +466,7 @@ iEnsureDirectory[path_String] := (
 
 iEncodePathPreservingSlash[s_String] := StringReplace[URLEncode[s], "%2F" -> "/"];
 
-iNormalizeGitPath[s_String] := StringReplace[s, "\\" -> "/"];
+iNormalizeGitPath[s_String] := StringJoin[Riffle[FileNameSplit[s], "/"]];
 
 iRepositoryURL[owner_String, repo_String] := "https://github.com/" <> owner <> "/" <> repo;
 
@@ -963,8 +963,8 @@ iCopyDirectoryPreservingExcluded[srcDir_String, dstDir_String,
         relPath = iNormalizeGitPath[
           dirName <> "/" <> FileNameJoin[FileNameDrop[f, FileNameDepth[srcDir]]]];
         If[!iMatchExcludePattern[relPath, excludePatterns],
-          dstPath = FileNameJoin[{DirectoryName[dstDir],
-            StringReplace[relPath, "/" -> $PathnameSeparator]}];
+          dstPath = FileNameJoin[Flatten[{DirectoryName[dstDir],
+            FileNameSplit[relPath]}]];
           iEnsureDirectory[DirectoryName[dstPath]];
           Quiet @ CopyFile[f, dstPath, OverwriteTarget -> True];
           copied++],
@@ -985,7 +985,7 @@ iCopyDirectoryFiltered[srcDir_String, dstBaseDir_String, relBase_String, exclude
         relBase <> "/" <> FileNameJoin[FileNameDrop[file, FileNameDepth[srcDir]]]
       ];
       If[!iMatchExcludePattern[relPath, excludePatterns],
-        dstPath = FileNameJoin[{dstBaseDir, StringReplace[relPath, "/" -> $PathnameSeparator]}];
+        dstPath = FileNameJoin[Flatten[{dstBaseDir, FileNameSplit[relPath]}]];
         iEnsureDirectory[DirectoryName[dstPath]];
         Quiet @ CopyFile[file, dstPath, OverwriteTarget -> True];
         AppendTo[copied, relPath]
@@ -2029,9 +2029,9 @@ GitHubInstallPackage[packageName_String, opts:OptionsPattern[]] :=
                   iEnsureDirectory[DirectoryName[dst]];
                   Quiet @ CopyFile[sf, dst, OverwriteTarget -> True];
                   AppendTo[originalsMapping,
-                    <|"repoPath" -> StringReplace[relPath, "\\" -> "/"],
-                      "localPath" -> StringReplace[
-                        FileNameJoin[{infoDir, "originals", relPath}], "\\" -> "/"]|>]],
+                    <|"repoPath" -> iNormalizeGitPath[relPath],
+                      "localPath" -> iNormalizeGitPath[
+                        FileNameJoin[{infoDir, "originals", relPath}]]|>]],
                 {sf, subFiles}];
               AppendTo[installed, FileNameJoin[{infoDir, "originals", dir}] <> "/"]
             ]],
@@ -2637,7 +2637,7 @@ iSaveLocalSnapshot[packageName_String] :=
               dir <> "/" <> FileNameJoin[FileNameDrop[f, FileNameDepth[src]]]];
             If[!iMatchExcludePattern[relPath, excludePatterns],
               Module[{dstF},
-                dstF = FileNameJoin[{snapDir, StringReplace[relPath, "/" -> $PathnameSeparator]}];
+                dstF = FileNameJoin[Flatten[{snapDir, FileNameSplit[relPath]}]];
                 iEnsureDirectory[DirectoryName[dstF]];
                 Quiet @ CopyFile[f, dstF, OverwriteTarget -> True];
                 AppendTo[copiedDirs, relPath];
@@ -2676,11 +2676,11 @@ iRestoreLocalSnapshot[packageName_String] :=
     Do[
       relPath = iRelativeGitPath[snapDir, file];
       (* localDir へコピー *)
-      dst = FileNameJoin[{localDir, StringReplace[relPath, "/" -> $PathnameSeparator]}];
+      dst = FileNameJoin[Flatten[{localDir, FileNameSplit[relPath]}]];
       iEnsureDirectory[DirectoryName[dst]];
       Quiet @ CopyFile[file, dst, OverwriteTarget -> True];
       (* pkgDir へコピー *)
-      dst = FileNameJoin[{pkgDir, StringReplace[relPath, "/" -> $PathnameSeparator]}];
+      dst = FileNameJoin[Flatten[{pkgDir, FileNameSplit[relPath]}]];
       iEnsureDirectory[DirectoryName[dst]];
       Quiet @ CopyFile[file, dst, OverwriteTarget -> True];
       restored++,
@@ -2773,7 +2773,7 @@ iCopyLocalRepoToPackageDir[packageName_String, localDir_String] :=
     allFiles = iListLocalFiles[localDir];
     Do[
       relPath = iRelativeGitPath[localDir, file];
-      dst = FileNameJoin[{pkgDir, StringReplace[relPath, "/" -> $PathnameSeparator]}];
+      dst = FileNameJoin[Flatten[{pkgDir, FileNameSplit[relPath]}]];
       iEnsureDirectory[DirectoryName[dst]];
       Quiet @ CopyFile[file, dst, OverwriteTarget -> True];
       copied++,
