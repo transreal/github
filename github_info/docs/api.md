@@ -151,3 +151,5 @@ JSON 出力では `iForceASCIIJSON` により非 ASCII 文字を `\uXXXX` エス
 ボタン評価の二重実行防止には `$iGitHubEvalGuard` を使用し、`WithCleanup` で確実にガードを解除する。
 
 ローカルスナップショットは `GithubRepositories/_local_snapshot/name/` に保存され、各ファイルの SHA-256 ハッシュを `_snapshot_hashes.json` に記録する。`GitHubCommitDataset` の #0 行から復元する際、スナップショット時点からの変更を検出し、変更ファイルがあれば上書き前に警告を表示する。
+
+`GitHubCommit` の blob 作成ループでは `Catch`/`Throw` パターンでエラーを確実に伝播する。ファイル読み込み失敗 (`FailureQ[ba]`)、blob API 失敗 (`FailureQ[blobResp]`)、blob SHA 欠落（空文字列含む）のいずれかが発生すると即座に `Throw` で脱出し、呼び出し元に `Failure` を返す。全 blob 作成後に `entries` が空の場合は `"EmptyEntries"` エラーを返す。`newTreeSHA` の検証でも空文字列を不正値として扱い、`"MissingNewTreeSHA"` エラーに `TreeResponse` を含めて返す。

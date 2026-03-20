@@ -128,6 +128,8 @@ GitHubCreateRepository["myPackage", ExtraDirectories -> {"Claude Directives"}]
 GitHubRefreshAndCommit["myPackage", "Update package"]
 ```
 
+コミット処理では、各ファイルを GitHub blob として作成し、tree → commit → ref 更新の流れで反映します。blob 作成時にエラーが発生した場合は `Catch/Throw` パターンにより即座にエラーが伝播され、詳細なエラーメッセージが返されます。ファイル読み込みエラー (`FailureQ[ba]`)、API エラー (`FailureQ[blobResp]`)、blob SHA の欠落・空文字列のいずれの場合も `Throw` で処理を中断し、呼び出し元にエラーを返します。
+
 ### プルリクエストの一括作成 (refresh → branch → commit → PR)
 
 ```wolfram
@@ -403,6 +405,20 @@ $GitHubLicenseHolder = "Katsunobu Imai"
 
 ---
 
+## コミット時のエラーハンドリング
+
+`GitHubCommit` および `GitHubRefreshAndCommit` は、コミット処理中に発生するエラーを `Catch/Throw` パターンで確実に伝播します。blob 作成ループ全体が `Catch` で囲まれており、個々のファイル処理中にエラーが検出されると `Throw` で即座にループを脱出します。以下のエラーが返される場合があります。
+
+| エラータグ | 原因 | 対処 |
+|------------|------|------|
+| `"MissingBlobSHA"` | GitHub API から blob SHA を取得できなかった（空文字列を含む） | GitHub API のレート制限やネットワーク接続を確認してください。エラーの `"File"` フィールドに問題のファイルパスが含まれます |
+| `"EmptyEntries"` | blob 作成がすべて失敗し、コミット対象のエントリが空になった | ファイルの読み取り権限や GitHub トークンのスコープを確認してください。エラーの `"LocalFiles"` フィールドに対象ファイル数が含まれます |
+| `"MissingNewTreeSHA"` | 新しい tree SHA を取得できなかった（空文字列を含む） | tree 作成時の API レスポンスを確認してください。エラーの `"TreeResponse"` フィールドで詳細を確認できます |
+
+blob 作成中にファイル読み込みエラー (`FailureQ[ba]`) や API エラー (`FailureQ[blobResp]`) が発生した場合、`Throw` により処理は即座に中断され、該当エラーがそのまま返されます。
+
+---
+
 ## トラブルシューティング
 
 | 症状 | 対処 |
@@ -416,3 +432,6 @@ $GitHubLicenseHolder = "Katsunobu Imai"
 | 過去コミットに巻き戻した後、元の作業ファイルに戻したい | `GitHubCommitDataset` の #0 行「Pull」ボタンでローカル最新版スナップショットに復元する |
 | Fine-grained PAT で新規リポジトリにアクセスできない (404) | Fine-grained PAT の対象リポジトリ設定が新しいリポジトリを含んでいない可能性があります。「All repositories」に設定するか、classic token を使用してください |
 | `head` と `base` が同じブランチで PR を作成できない | `GitHubSubmitPullRequest` を使うか、`Branch` オプションで別ブランチを指定してください |
+| コミット時に `"EmptyEntries"` エラーが返される | blob 作成がすべて失敗しています。ネットワーク接続、GitHub トークンのスコープ (`repo`)、対象ファイルの読み取り権限を確認してください |
+| コミット時に `"MissingBlobSHA"` エラーが返される | GitHub API が blob SHA を返しませんでした。API レート制限に達していないか確認してください。エラーの `"File"` フィールドに問題のファイルパスが含まれます |
+| コミット時に `"MissingNewTreeSHA"` エラーが返される | tree 作成の API レスポンスに SHA が含まれていません。エラーの `"TreeResponse"` フィールドで詳細を確認してください |

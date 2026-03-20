@@ -344,6 +344,19 @@ GitHubCommit["mypackage", "fix: バグ修正",
 
 通常は `GitHubRefreshAndCommit` や `GitHubSubmitPullRequest` の利用を推奨します。
 
+### 12-1. エラーハンドリング
+
+`GitHubCommit` は blob 作成時のエラーを `Catch/Throw` パターンで確実に伝播します。個別ファイルの blob 作成中にエラーが発生した場合、残りのファイル処理を即座に中断し、エラーの `Failure` オブジェクトを返します。
+
+発生しうる主なエラー:
+
+| タグ | 説明 |
+|------|------|
+| `"MissingBlobSHA"` | blob 作成後に SHA を取得できなかった場合。エラーデータに対象ファイルパスが含まれます。 |
+| `"EmptyEntries"` | すべての blob 作成が失敗し、コミット対象のエントリが空の場合。エラーデータにローカルファイル数が含まれます。 |
+| `"MissingNewTreeSHA"` | 新しい tree SHA を取得できなかった場合。エラーデータに tree レスポンスの詳細が含まれます。 |
+| `"LocalFileReadFailed"` | ローカルファイルの読込に失敗した場合。 |
+
 ---
 
 ## 13. 他人のリポジトリを使う典型的な流れ

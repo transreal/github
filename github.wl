@@ -1076,7 +1076,7 @@ GitHubPackageURL[packageName_String, opts:OptionsPattern[]] :=
     If[FailureQ[owner], Return[$Failed]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode = True];
+      ClaudeCode`Private`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     iRepositoryURL[owner, repo]
@@ -1168,7 +1168,7 @@ GitHubCreateRepository[packageName_String, opts : OptionsPattern[]] :=
     If[FailureQ[token], Return[token]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode = True];
+      ClaudeCode`Private`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     resp = iAPICall[
@@ -1249,7 +1249,7 @@ GitHubReadFile[packageName_String, path_String, opts : OptionsPattern[]] :=
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode = True];
+      ClaudeCode`Private`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     baseBranch = iResolveBaseBranch[token, owner, repo, OptionValue[BaseBranch]];
@@ -1300,7 +1300,7 @@ GitHubPull[packageName_String, opts : OptionsPattern[]] :=
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode = True];
+      ClaudeCode`Private`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     baseBranch = iResolveBaseBranch[token, owner, repo, OptionValue[BaseBranch]];
@@ -1388,7 +1388,7 @@ GitHubCommit[packageName_String, message_String, opts : OptionsPattern[]] :=
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode = True];
+      ClaudeCode`Private`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     repoInfo = iWaitForRepoInfo[token, owner, repo];
@@ -1426,18 +1426,25 @@ GitHubCommit[packageName_String, message_String, opts : OptionsPattern[]] :=
     If[Length[localFiles] == 0,
       Return[iFailure["NoLocalFiles", "ローカル GitHub 作業フォルダにコミット対象ファイルがありません。", <|"LocalRepoPath" -> localDir|>]]
     ];
-    Do[
-      relPath = iRelativeGitPath[localDir, file];
-      ba = iReadLocalByteArray[file];
-      If[FailureQ[ba], Return[ba]];
-      blobResp = iCreateBlob[token, owner, repo, ba];
-      If[FailureQ[blobResp], Return[blobResp]];
-      blobSHA = Lookup[blobResp["Body"], "sha", Missing["NotAvailable"]];
-      If[!StringQ[blobSHA],
-        Return[iFailure["MissingBlobSHA", "blob SHA を取得できませんでした。", <|"File" -> file|>]]
+    (* Catch/Throw で blob 作成エラーを確実に伝播 *)
+    Module[{blobError},
+      blobError = Catch[
+        Do[
+          relPath = iRelativeGitPath[localDir, file];
+          ba = iReadLocalByteArray[file];
+          If[FailureQ[ba], Throw[ba]];
+          blobResp = iCreateBlob[token, owner, repo, ba];
+          If[FailureQ[blobResp], Throw[blobResp]];
+          blobSHA = Lookup[blobResp["Body"], "sha", Missing["NotAvailable"]];
+          If[!StringQ[blobSHA] || blobSHA === "",
+            Throw[iFailure["MissingBlobSHA", "blob SHA を取得できませんでした。", <|"File" -> file|>]]
+          ];
+          AppendTo[entries, <|"path" -> relPath, "mode" -> "100644", "type" -> "blob", "sha" -> blobSHA|>],
+          {file, localFiles}
+        ];
+        None  (* 正常終了 *)
       ];
-      AppendTo[entries, <|"path" -> relPath, "mode" -> "100644", "type" -> "blob", "sha" -> blobSHA|>],
-      {file, localFiles}
+      If[blobError =!= None, Return[blobError]]
     ];
     localPaths = Lookup[entries, "path"];
     If[TrueQ[OptionValue[DeleteMissing]],
@@ -1453,11 +1460,18 @@ GitHubCommit[packageName_String, message_String, opts : OptionsPattern[]] :=
         (<|"path" -> #, "mode" -> "100644", "type" -> "blob", "sha" -> None|> & /@ deletePaths)
       ];
     ];
+    (* entries が空なら blob 作成で問題が起きた可能性がある *)
+    If[Length[entries] === 0,
+      Return[iFailure["EmptyEntries",
+        "コミット対象のエントリが空です。blob 作成が失敗した可能性があります。",
+        <|"LocalFiles" -> Length[localFiles]|>]]
+    ];
     treeResp = iCreateTree[token, owner, repo, baseTreeSHA, entries];
     If[FailureQ[treeResp], Return[treeResp]];
     newTreeSHA = Lookup[treeResp["Body"], "sha", Missing["NotAvailable"]];
-    If[!StringQ[newTreeSHA],
-      Return[iFailure["MissingNewTreeSHA", "新しい tree SHA を取得できませんでした。", <||>]]
+    If[!StringQ[newTreeSHA] || newTreeSHA === "",
+      Return[iFailure["MissingNewTreeSHA", "新しい tree SHA を取得できませんでした。",
+        <|"TreeResponse" -> treeResp|>]]
     ];
     author = iNormalizePerson[OptionValue[Author]];
     committer = iNormalizePerson[OptionValue[Committer]];
@@ -1501,7 +1515,7 @@ GitHubCreatePullRequest[packageName_String, title_String, opts : OptionsPattern[
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode = True];
+      ClaudeCode`Private`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     base = iResolveBaseBranch[token, owner, repo, OptionValue[BaseBranch]];
@@ -1909,7 +1923,7 @@ GitHubInstallPackage[packageName_String, opts:OptionsPattern[]] :=
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode = True];
+      ClaudeCode`Private`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     (* 明示的に Repository が指定された場合も repo_database に登録 *)
@@ -2094,7 +2108,7 @@ GitHubListPullRequests[packageName_String, opts:OptionsPattern[]] :=
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode = True];
+      ClaudeCode`Private`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     resp = iAPICall["GET",
@@ -2224,7 +2238,7 @@ GitHubMergePullRequest[packageName_String, prNumber_Integer, reason_String:"",
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode = True];
+      ClaudeCode`Private`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     (* コメントとして理由を残す *)
@@ -2255,7 +2269,7 @@ GitHubClosePullRequest[packageName_String, prNumber_Integer, reason_String:"",
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode = True];
+      ClaudeCode`Private`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     If[StringLength[reason] > 0,
@@ -2291,7 +2305,7 @@ GitHubReviewPullRequest[packageName_String, prNumber_Integer, opts:OptionsPatter
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode = True];
+      ClaudeCode`Private`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     (* PR 情報取得 *)
@@ -2375,7 +2389,7 @@ GitHubListCommits[packageName_String, opts:OptionsPattern[]] :=
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode = True];
+      ClaudeCode`Private`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     baseBranch = iResolveBaseBranch[token, owner, repo, OptionValue[BaseBranch]];
@@ -2797,7 +2811,7 @@ iGitHubPullAtCommit[packageName_String, commitSHA_String, opts:OptionsPattern[]]
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode = True];
+      ClaudeCode`Private`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     localDir = GitHubEnsureLocalRepo[packageName, LocalRepoPath -> OptionValue[LocalRepoPath]];
@@ -2869,7 +2883,7 @@ GitHubReviewCommit[packageName_String, commitSHA_String, opts:OptionsPattern[]] 
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode = True];
+      ClaudeCode`Private`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     (* commits API \:306f\:30d5\:30a1\:30a4\:30eb\:5dee\:5206\:3082\:542b\:3080 *)
@@ -2951,7 +2965,7 @@ GitHubRevertCommit[packageName_String, commitSHA_String, reason_String:"",
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode = True];
+      ClaudeCode`Private`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     baseBranch = iResolveBaseBranch[token, owner, repo, OptionValue[BaseBranch]];

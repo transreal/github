@@ -143,6 +143,18 @@ GitHubCommit["mypackage", "fix: update algorithm"]
 GitHubCommit["mypackage", "feat: new feature", Branch -> "dev", CreateBranch -> True]
 ```
 
+**エラーハンドリング:** blob 作成処理では `Catch`/`Throw` パターンを使用し、個々のファイルの読み込み失敗・blob 作成失敗・SHA 取得失敗を確実に検出して伝播します。blob 作成後にエントリが空の場合は `"EmptyEntries"` エラーを返します。tree SHA や blob SHA の検証では空文字列も不正値として扱います。
+
+主なエラータグ:
+
+| タグ | 説明 |
+|---|---|
+| `"LocalFileReadFailed"` | ローカルファイルの読み込みに失敗 |
+| `"MissingBlobSHA"` | blob 作成後に SHA を取得できなかった |
+| `"EmptyEntries"` | コミット対象のエントリが空（blob 作成の問題の可能性） |
+| `"MissingNewTreeSHA"` | 新しい tree SHA を取得できなかった |
+| `"NoLocalFiles"` | ローカル作業フォルダにファイルがない |
+
 主なオプション: `Branch`, `BaseBranch`, `CreateBranch`, `Force`, `DeleteMissing`, `Author`, `Committer`, `IncludePackageFile`, `Fallback`
 
 ---
