@@ -1,48 +1,46 @@
-# github
+# github — 設計思想と実装の概要
 
 GitHub REST API を Wolfram Language から操作するヘルパーパッケージ（コンテキスト: `GitHubREST``）
 
-## 設計思想と実装の概要
-
-### なぜこのパッケージを作ったか
+## なぜこのパッケージを作ったか
 
 Wolfram Language（Mathematica）のパッケージ開発では、コードを書き上げた後に GitHub へアップロードする作業が手動になりがちです。`github`（`GitHubREST``）は、その一連の操作――リポジトリ作成・ファイル同期・コミット・プルリクエスト管理――をすべて Wolfram Language のセル内から完結させることを目的として設計されています。
 
-### 認証の委譲設計
+## 認証の委譲設計
 
 APIキーをコード中に直書きしない安全設計を採用しています。GitHub Personal Access Token の取得・保持はすべて [NBAccess](https://github.com/transreal/NBAccess) の `NBGetAPIKey["github"]` に委譲します。これにより、`github` パッケージ自身は認証情報を一切保持せず、複数パッケージ間で統一されたキー管理が実現されます。
 
-### マニフェスト駆動のファイル管理
+## マニフェスト駆動のファイル管理
 
 単純な `.wl` ファイル単体のアップロードだけでなく、パクレット（フォルダ型パッケージ）や付属ドキュメント群をまとめて同期するために、**マニフェスト**（`packageName_info/upload_manifest.json`）を導入しています。マニフェストにはアップロード対象ファイル・ディレクトリ・除外パターンを記述でき、パッケージ種別（`.wl` 単体 / パクレットフォルダ）を自動検出して初回は自動生成されます。パッケージ種別が変更された場合（`.wl` からパクレットへの変換など）もマニフェストは自動更新されます。`_info/docs/README.md` が存在する場合はリポジトリのトップレベル `README.md` として自動配置されるため、ドキュメント管理も一元化できます。
 
-### Git 低レベル API によるコミット
+## Git 低レベル API によるコミット
 
 GitHub Contents API の単純なファイル更新ではなく、Git の低レベル API（blob 作成 → tree 作成 → commit 作成 → ref 更新）を使っています。これにより複数ファイルを**一つのコミットにまとめて**反映でき、履歴が汚れません。blob 作成処理では `Catch`/`Throw` パターンを採用し、ファイル読み込みエラー・API エラー・SHA 取得失敗（空文字列を含む）のいずれも即座に検出・伝播します。エントリが空の場合は `"EmptyEntries"` エラーとして報告され、tree SHA の検証でも空文字列を不正値として扱うため、問題の原因を正確に特定できます。Windows 環境での UTF-8 エンコード問題は `iEncodeJSONBody` / `iForceASCIIJSON` で内部的に回避しており、日本語ファイル名・コミットメッセージも正しく送信できます。
 
-### 日本語パッケージ名対応
+## 日本語パッケージ名対応
 
 GitHub リポジトリ名には ASCII 文字しか使えないため、日本語などの非 ASCII パッケージ名と英語リポジトリ名の対応を `GithubRepositories/repo_database.json` で管理する**リポジトリ名データベース**を内蔵しています。未登録の非 ASCII 名は [claudecode](https://github.com/transreal/claudecode) の Claude API を呼び出し、意味のある英語リポジトリ名を 3 候補生成し、GitHub 上の重複を確認した上で自動登録します。Claude API が利用できない場合は `Transliterate` によるフォールバックが行われます。`Fallback -> True` オプションを指定すると、API 制限時も代替モデルで継続処理されます。`Fallback -> True` が明示されていない場合はエラーを伝播して処理を停止し、不正なリポジトリ名が登録されることを防ぎます。
 
-### ローカル作業フォルダの役割
+## ローカル作業フォルダの役割
 
 `$packageDirectory/GithubRepositories/packageName` をローカル作業フォルダとして使います。GitHub からの Pull（取得）はこのフォルダへ展開され、Commit 時はこのフォルダの内容を GitHub へ送信します。中間フォルダを挟む設計により、`$packageDirectory` 本体を直接汚染せずに安全にバージョン管理できます。
 
-### ローカルスナップショットによる安全なコミット巻き戻し
+## ローカルスナップショットによる安全なコミット巻き戻し
 
 `GitHubCommitDataset` の「Pull」ボタンで過去コミットのファイルをローカルに取得する際、**初回のみ**現在の作業状態を `GithubRepositories/_local_snapshot/packageName/` にスナップショットとして自動保存します。各ファイルの SHA-256 ハッシュも `_snapshot_hashes.json` に記録され、スナップショット後に変更されたファイルを検出できます。`GitHubCommitDataset` の「#0 行」から「Pull」ボタンを押すことでローカル最新版へいつでも復元可能です。2 回目以降の過去コミットへの巻き戻しでは既存スナップショットを温存するため、最初の作業状態が失われません。
 
 復元時に変更されたファイルが検出された場合は、ファイル一覧と確認ボタン（「すべてローカル最新版に置き換える」/「キャンセル」）を含む警告セルグループが Grid の直後に挿入されます。
 
-### プルリクエストの対話的管理
+## プルリクエストの対話的管理
 
 `GitHubPullRequestDataset` は、オープン PR の一覧を Review / Pull / Merge / Close の**ボタン付き Grid** として返します。緊急度・ラベル・依存関係によるソートも行われるため、Mathematica のノートブック上でそのままコードレビューからマージまで完結できます。
 
-### コミット履歴の対話的管理
+## コミット履歴の対話的管理
 
 `GitHubCommitDataset` は、コミット履歴を Review / Pull / Revert の**ボタン付き Grid** として表示します。表示時に既存スナップショットを削除して現在の作業状態を新規保存するため、常に最新のローカル状態が記録されます。特定コミットのファイルをローカルに取得して検証したり、変更を打ち消すリバートコミットを作成したりする操作がノートブック上で完結します。ボタンの二重実行は `$iGitHubEvalGuard` による再評価防止ガードで保護されています。
 
-### 他人のリポジトリのインストール管理
+## 他人のリポジトリのインストール管理
 
 `GitHubInstallPackage[packageName, url]` の 2 引数版を使うと、GitHub URL を直接指定して他者のリポジトリをインストールできます。インストール時に owner・repository 名が `repo_database.json` へ自動登録されるため、以後は `packageName` だけで `GitHubUpdatePackage` や `GitHubCommitDataset` などの操作が可能になります。
 
@@ -55,8 +53,6 @@ GitHub リポジトリ名には ASCII 文字しか使えないため、日本語
 | C (リモート + `_info` なし) | RepoDB に owner 登録あり、`_info` フォルダなし | `.wl` のみ `$packageDirectory` へ、それ以外は `_info/originals/` に保存 |
 
 パターン C の場合、非 `.wl` ファイル（README 等）は `packageName_info/originals/` へ振り分けられ、`doc_options.json` にマッピングが保存されます。コミット時に `iRestoreOriginalsToRepo` が元の位置へ書き戻します。
-
----
 
 ## 詳細説明
 
@@ -222,17 +218,6 @@ GitHubInstallPackage["pkg", "https://github.com/alice/repo"]
 - **`GitHubReviewCommit[name, sha]`** — 指定コミットの詳細・差分をノートブックに CellGroup として表示する。Pull / Revert ボタン付き
 - **`GitHubRevertCommit[name, sha, reason]`** — 指定コミットの変更を打ち消すリバートコミットを作成する（親コミットの tree を使用）
 
-```wolfram
-(* コミット履歴を表示（最大 50 件） *)
-GitHubCommitDataset["mypackage", MaxItems -> 50]
-
-(* 特定コミットの差分をレビュー *)
-GitHubReviewCommit["mypackage", "a1b2c3d4e5f6..."]
-
-(* コミットをリバート *)
-GitHubRevertCommit["mypackage", "a1b2c3d4e5f6...", "バグ修正を差し戻し"]
-```
-
 #### リポジトリ名データベース（日本語対応）
 
 - **`GitHubRepoDB[]`** — `repo_database.json` の全レコードを返す
@@ -242,28 +227,10 @@ GitHubRevertCommit["mypackage", "a1b2c3d4e5f6...", "バグ修正を差し戻し"
 
 未登録の非 ASCII パッケージ名は [claudecode](https://github.com/transreal/claudecode) の Claude API を呼び出して意味のある英語リポジトリ名を 3 候補生成し、GitHub 上の重複を確認した上で自動登録します。全候補が重複する場合はサフィックス（`-2` ～ `-20`）または日付が付与されます。RepoDB に `owner` が登録されている場合、`iResolveOwner` はトークンからの自動取得よりも RepoDB の値を優先します。
 
-```wolfram
-(* 日本語パッケージ名に英語リポジトリ名を登録する例 *)
-GitHubRepoDBSet["情報工学科時間割", "jouhou-timetable"]
-GitHubRepoDBLookup["情報工学科時間割"]
-(* -> "jouhou-timetable" *)
-
-(* owner も含めて登録する例 *)
-GitHubRepoDBSet["fact", "fact", "transreal"]
-```
-
 #### パッケージ管理
 
 - **`GitHubInstallPackage[name]`** — GitHub から `$packageDirectory` へ初回ダウンロード。`Owner` オプションで所有者を指定可能
 - **`GitHubInstallPackage[name, url]`** — GitHub URL を直接指定して他者のリポジトリをインストール。`url` から owner・repository 名を解析して `repo_database.json` に自動登録し、以後はパッケージ名だけで操作できる
-
-  ```wolfram
-  (* 他人のリポジトリを URL 指定でインストール *)
-  GitHubInstallPackage["fact", "https://github.com/transreal/fact"]
-  (* リモートリポジトリを登録: transreal/fact -> fact *)
-  (* インストール後は GitHubUpdatePackage["fact"] などが利用可能 *)
-  ```
-
 - **`GitHubUpdatePackage[name]`** — 既存パッケージを GitHub 最新版に更新（内部的に `GitHubInstallPackage` と同じ処理）
 
 #### グローバル変数
@@ -280,6 +247,59 @@ GitHubRepoDBSet["fact", "fact", "transreal"]
 | `example.md` | 典型的なユースケースのコード例 |
 
 リポジトリ: [https://github.com/transreal/github](https://github.com/transreal/github)
+
+## 使用例・デモ
+
+### 新規パッケージのリポジトリ作成
+
+```wolfram
+(* パッケージの GitHub リポジトリを作成してファイルを初回アップロード *)
+GitHubCreateRepository["mypackage", 
+  Public -> True,
+  Description -> "My Wolfram Language package",
+  ExtraDirectories -> {"Claude Directives"}]
+```
+
+### 既存パッケージの更新とプルリクエスト
+
+```wolfram
+(* パッケージを更新してプルリクエストを作成 *)
+GitHubSubmitPullRequest["mypackage",
+  "feat: 新機能追加", 
+  "詳細な変更内容を記述"]
+
+(* プルリクエスト一覧を表示（レビュー・マージボタン付き） *)
+GitHubPullRequestDataset["mypackage"]
+```
+
+### 他者のリポジトリをインストール
+
+```wolfram
+(* GitHub URL を指定して他人のパッケージをインストール *)
+GitHubInstallPackage["ResistorBuilder", 
+  "https://github.com/dzhang314/ResistorBuilder"]
+
+(* 以降はパッケージ名だけで操作可能 *)
+GitHubCommitDataset["ResistorBuilder"]
+```
+
+### コミット履歴の管理
+
+```wolfram
+(* コミット履歴を表示（レビュー・プル・リバートボタン付き） *)
+GitHubCommitDataset["mypackage", MaxItems -> 50]
+
+(* 特定コミットの詳細をレビュー *)
+GitHubReviewCommit["mypackage", "a1b2c3d4e5f6..."]
+```
+
+### 日本語パッケージ名の自動対応
+
+```wolfram
+(* 日本語パッケージ名でもリポジトリ名を自動翻訳 *)
+GitHubCreateRepository["情報工学科時間割"]
+(* -> 自動的に "jouhou-timetable" などの英語リポジトリ名を生成 *)
+```
 
 ## 免責事項
 
