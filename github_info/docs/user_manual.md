@@ -123,6 +123,21 @@ GitHubReadFile["mypackage", "data.bin", ReturnType -> "ByteArray"]
 
 ---
 
+### `GitHubReadLocalFile`
+ローカルファイルを UTF-8 で読み取ります。
+
+`ReadString` は `$CharacterEncoding` に依存しますが、この関数は常に UTF-8 でデコードするため、日本語環境（`$CharacterEncoding = "UTF-8"` 以外の場合）でも文字化けしません。`path` を省略するとパッケージの `.wl` ファイルを読み取ります。
+
+```mathematica
+GitHubReadLocalFile["mypackage", "README.md"]
+(* -> ファイルの内容を UTF-8 テキストとして返す *)
+
+GitHubReadLocalFile["mypackage"]
+(* -> mypackage.wl の内容を UTF-8 テキストとして返す *)
+```
+
+---
+
 ### `GitHubPull`
 リモートの内容をローカル作業フォルダへ取得します。
 

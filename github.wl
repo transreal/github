@@ -50,6 +50,12 @@ GitHubReadFile::usage =
   "GitHubReadFile[packageName, path] は GitHub 上のファイルを読み取る。\n" <>
   "ReturnType -> \"Text\" | \"ByteArray\" | \"Bytes\" を指定可能。";
 
+GitHubReadLocalFile::usage =
+  "GitHubReadLocalFile[packageName, path] はローカルファイルを UTF-8 で読み取る。\n" <>
+  "GitHubReadFile との比較用。ReadString は $CharacterEncoding に依存するが、\n" <>
+  "この関数は常に UTF-8 でデコードするため日本語環境でも文字化けしない。\n" <>
+  "path が省略された場合はパッケージの .wl ファイルを読む。";
+
 GitHubPull::usage =
   "GitHubPull[packageName] は指定ブランチのリポジトリ内容をローカル GitHub 作業フォルダへ取得する。";
 
@@ -1277,8 +1283,24 @@ GitHubReadFile[packageName_String, path_String, opts : OptionsPattern[]] :=
     Switch[returnType,
       "ByteArray", ba,
       "Bytes", Normal[ba],
-      _, Quiet @ Check[ByteArrayToString[ba], ba]
+      _, Quiet @ Check[ByteArrayToString[ba, "UTF-8"], ba]
     ]
+  ];
+
+(* ローカルファイルを UTF-8 で読み取る。
+   ReadString は $CharacterEncoding（日本語 Windows では ShiftJIS）に依存するため、
+   UTF-8 ファイルの比較で文字化けする。この関数はバイト列を UTF-8 として正しくデコードする。 *)
+GitHubReadLocalFile[packageName_String, path_String:""] :=
+  Module[{filePath, bytes},
+    filePath = If[path === "" || path === packageName <> ".wl",
+      FileNameJoin[{Global`$packageDirectory, packageName <> ".wl"}],
+      FileNameJoin[{Global`$packageDirectory, path}]];
+    If[!FileExistsQ[filePath],
+      Return[iFailure["FileNotFound", "\:30d5\:30a1\:30a4\:30eb\:304c\:898b\:3064\:304b\:308a\:307e\:305b\:3093\:3002", <|"File" -> filePath|>]]];
+    bytes = Quiet @ Check[ReadByteArray[filePath], $Failed];
+    If[!ByteArrayQ[bytes],
+      Return[iFailure["ReadFailed", "\:30d5\:30a1\:30a4\:30eb\:306e\:8aad\:307f\:8fbc\:307f\:306b\:5931\:6557\:3057\:307e\:3057\:305f\:3002", <|"File" -> filePath|>]]];
+    ByteArrayToString[bytes, "UTF-8"]
   ];
 
 Options[GitHubPull] = {
@@ -3031,6 +3053,7 @@ Print[
   "  GitHubRefreshLocalPackage[package]       \[RightArrow] 単一 .wl ファイルを local repo へコピー (後方互換)\n" <>
   "  GitHubCreateRepository[package]          \[RightArrow] GitHub に新規リポジトリを作成 + manifest コミット\n" <>
   "  GitHubReadFile[package, path]            \[RightArrow] GitHub 上のファイル読取\n" <>
+  "  GitHubReadLocalFile[package, path]       \[RightArrow] ローカルファイルを UTF-8 で読取\n" <>
   "  GitHubPull[package]                      \[RightArrow] GitHub から local repo へ取得\n" <>
   "  GitHubCommit[package, message]           \[RightArrow] local repo の内容を GitHub へコミット\n" <>
   "  GitHubCreatePullRequest[package, title]  \[RightArrow] pull request を作成\n" <>

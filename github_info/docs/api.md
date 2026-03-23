@@ -1,155 +1,254 @@
-# GitHubREST` — API リファレンス
+# GitHubREST` パッケージ API リファレンス
 
-パッケージ: [github](https://github.com/transreal/github)
-依存: [NBAccess](https://github.com/transreal/NBAccess)（API キー取得に使用）
+## 概要
 
-## 関数一覧
+GitHub REST API ユーティリティ。NBAccess.wl および claudecode.wl と連携動作する。認証は `NBAccess`NBGetAPIKey["github"]` に委譲。
 
-### URL / パス解決
+依存: [NBAccess](https://github.com/transreal/NBAccess), [claudecode](https://github.com/transreal/claudecode)
 
-| シグネチャ | 戻り値 | 説明 |
-|---|---|---|
-| `GitHubPackageURL[name]` | `String` | `$packageDirectory` 内パッケージの GitHub URL を返す。オプション: `Owner`, `Repository`, `Fallback` |
-| `GitHubPackageURLs[]` | `Association` | 全パッケージの `<\|name -> url\|>` を返す |
-| `GitHubRepoPath[name]` | `String` | ローカル作業フォルダのパスを返す (`$packageDirectory/GithubRepositories/name`) |
-| `GitHubEnsureLocalRepo[name]` | `String` | ローカル作業フォルダを作成して返す。オプション: `LocalRepoPath` |
+## 定数
 
-### マニフェスト / ローカル同期
+### $GitHubLicenseHolder
+型: String, 初期値: ""
+MIT ライセンスの著作権者名。空文字列の場合 README.md にライセンスセクションは挿入されない。
+例: `$GitHubLicenseHolder = "Katsunobu Imai"`
 
-| シグネチャ | 戻り値 | 説明 |
-|---|---|---|
-| `GitHubReadManifest[name]` | `Association` | `_info/upload_manifest.json` を読む。不在時は自動生成。パッケージ種別 (.wl/パクレット) 変更時も自動更新 |
-| `GitHubRefreshLocalPackageGroup[name]` | `Association` | マニフェストに従いファイルをローカル作業フォルダへコピー。`_info/docs/README.md` があればトップレベル `README.md` として配置。`_info/originals/` のファイルも元の位置へ書き戻す。オプション: `LocalRepoPath` |
-| `GitHubRefreshLocalPackage[name]` | `String` | `name.wl` 単体をローカルへコピー（後方互換用）。オプション: `LocalRepoPath`, `PackageFile` |
+## パッケージ URL 取得
 
-### リポジトリ操作
+### GitHubPackageURL[packageName, opts]
+`$packageDirectory` 内のパッケージの GitHub URL を返す。
+→ String | $Failed
+Options: Owner -> Automatic (ユーザー名/組織名。Automatic なら API トークンから取得), Repository -> Automatic (リポジトリ名。Automatic なら packageName を使用), Fallback -> False
 
-| シグネチャ | 戻り値 | 説明 |
-|---|---|---|
-| `GitHubCreateRepository[name]` | `Association` | GitHub に新規リポジトリを作成し、`upload_manifest.json` に基づくファイル群をコミットする。戻り値に `"DefaultBranch"`, `"Owner"`, `"Repository"` 等を含む |
-| `GitHubReadFile[name, path]` | `String\|ByteArray` | GitHub 上のファイルを読み取る |
-| `GitHubPull[name]` | `Association` | リモートの内容をローカル作業フォルダへ取得。戻り値に `"FilesPulled"` を含む |
-| `GitHubCommit[name, message]` | `Association` | ローカル作業フォルダの内容を GitHub へ一括コミット。戻り値に `"CommitSHA"`, `"Branch"` 等を含む |
-| `GitHubRefreshAndCommit[name, message]` | `Association` | リフレッシュ → コミットを一括実行。戻り値に `"RefreshResult"` と `"CommitSHA"` 等を含む |
+### GitHubPackageURLs[]
+`$packageDirectory` 内の全パッケージの `<|name -> url, ...|>` を返す。
+→ Association
 
-### プルリクエスト
+## ローカルリポジトリ管理
 
-| シグネチャ | 戻り値 | 説明 |
-|---|---|---|
-| `GitHubCreatePullRequest[name, title]` | `Association` | PR を作成する。head と base が同一ブランチの場合はエラーを返す |
-| `GitHubSubmitPullRequest[name, title, message]` | `Association` | refresh → branch 作成 → commit → PR 作成を一括実行。ブランチ名は `pr/name/YYYYMMDD-HHmmss-slug` 形式で自動生成 |
-| `GitHubListPullRequests[name]` | `List` | オープン PR 一覧を緊急度・重要度・依存関係でソートして返す |
-| `GitHubPullRequestDataset[name]` | `Grid` | PR 一覧を Review/Pull/Merge/Close ボタン付き Grid で返す |
-| `GitHubMergePullRequest[name, prNumber, reason]` | `Association` | PR をマージする。`reason` は省略可（既定 `""`）。理由はコメントとして残る |
-| `GitHubClosePullRequest[name, prNumber, reason]` | `Association` | PR をクローズする。`reason` は省略可（既定 `""`）。理由はコメントとして残る |
-| `GitHubReviewPullRequest[name, prNumber]` | `Association` | PR のコード差分をノートブックに CellGroup として出力する。Merge/Close ボタン付き |
+### GitHubRepoPath[packageName]
+ローカル GitHub 作業フォルダのパスを返す。`FileNameJoin[{$packageDirectory, "GithubRepositories", packageName}]`
+→ String
 
-### コミット履歴
+### GitHubEnsureLocalRepo[packageName, opts]
+ローカル GitHub 作業フォルダを作成して返す。
+→ String (ディレクトリパス)
+Options: LocalRepoPath -> Automatic
 
-| シグネチャ | 戻り値 | 説明 |
-|---|---|---|
-| `GitHubListCommits[name]` | `List` | リポジトリのコミット履歴を取得してリストで返す |
-| `GitHubCommitDataset[name]` | — | コミット履歴を Review/Pull/Revert ボタン付き Grid でノートブックに出力する。起動時に現在の作業状態を `GithubRepositories/_local_snapshot/name/` へ SHA-256 ハッシュ付きで自動スナップショット保存する。#0 行（ローカル最新版）の Pull ボタンで復元可能。復元時にスナップショット後の変更を検出し警告を表示する |
-| `GitHubReviewCommit[name, sha]` | `Association` | 指定コミットの詳細・差分をノートブックに CellGroup として表示する。Pull/Revert ボタン付き。Pull は `GithubRepositories` と `$packageDirectory` の両方に反映する |
-| `GitHubRevertCommit[name, sha, reason]` | `Association` | 指定コミットの親の tree を使いリバートコミットを作成する。`reason` は省略可（既定 `""`） |
+### GitHubRefreshLocalPackage[packageName, opts]
+`$packageDirectory/packageName.wl` をローカル GitHub 作業フォルダへコピーする。単一ファイル用後方互換。グループアップロードには `GitHubRefreshLocalPackageGroup` を使う。
+→ String (コピー先パス) | Failure
+Options: LocalRepoPath -> Automatic, PackageFile -> Automatic
 
-### リポジトリ名 DB
+### GitHubReadManifest[packageName]
+`packageName_info/upload_manifest.json` を読み Association で返す。ファイルが存在しない場合は自動生成してディスクに保存。パッケージ種別 (.wl/パクレット) が変わった場合も自動更新する。
+→ Association
 
-| シグネチャ | 戻り値 | 説明 |
-|---|---|---|
-| `GitHubRepoDB[]` | `Association` | `GithubRepositories/repo_database.json` の全レコードを返す |
-| `GitHubRepoDBSet[name, repoName]` | `Association` | パッケージ名 → リポジトリ名の対応を DB に登録する |
-| `GitHubRepoDBSet[name, repoName, owner]` | `Association` | パッケージ名 → リポジトリ名 + owner を DB に登録する。`GitHubInstallPackage[name, url]` でインストールした際に自動呼び出される |
-| `GitHubRepoDBLookup[name]` | `String` | DB からリポジトリ名を解決（未登録なら `name` をそのまま返す） |
+### GitHubRefreshLocalPackageGroup[packageName, opts]
+`upload_manifest.json` に基づき対象ファイル・ディレクトリをローカル GitHub 作業フォルダへコピーする。`_info/docs/README.md` が存在すればトップレベル `README.md` として配置する。
+→ Association | Failure
+Options: LocalRepoPath -> Automatic
 
-非 ASCII パッケージ名で `Repository -> Automatic` の場合、Claude API (`iTranslateToEnglishRepoName`) を呼び出して意味のある英語リポジトリ名を自動生成し DB に登録する。GitHub 上の重複も自動回避する（候補を3つ生成し、存在しないものを採用。全て存在する場合はサフィックス `-2` 〜 `-20` を試行）。`Fallback -> True` を指定すると Claude Code が利用できない場合に `Transliterate` にフォールバックする。
+## リポジトリ作成・読み取り
 
-### パッケージ管理
+### GitHubCreateRepository[packageName, opts]
+GitHub 上に新規リポジトリを作成する。`upload_manifest.json` が存在すれば対象ファイル群をまとめてコミット。`_info/docs/README.md` があればトップレベル `README.md` として配置。作成後リポジトリが API から参照可能になるまで待機し、結果 Association を返す。
+→ Association | Failure
+Options: Repository -> Automatic, Public -> False, Description -> "", Homepage -> None, AutoInit -> True, GitignoreTemplate -> None, LicenseTemplate -> None, LocalRepoPath -> Automatic, IncludePackageFile -> True, PackageFile -> Automatic, ExtraDirectories -> {} (manifest の directories に永続追加するディレクトリリスト), Fallback -> False
+例: `GitHubCreateRepository["fact", Public -> False, ExtraDirectories -> {"Claude Directives"}]`
 
-| シグネチャ | 戻り値 | 説明 |
-|---|---|---|
-| `GitHubInstallPackage[name]` | `Association` | GitHub から `$packageDirectory` へ初回ダウンロード。自分のリポジトリ（RepoDB に owner 未登録）の場合は全ファイルをそのままコピー |
-| `GitHubInstallPackage[name, url]` | `Association` | 他人のリポジトリ URL からインストール。URL をパースして owner/repo を RepoDB に登録し、以降は `name` だけで操作できる。非 `.wl` ファイルは `name_info/originals/` に振り分けられ、コミット時に元の位置へ書き戻される |
-| `GitHubUpdatePackage[name]` | `Association` | 既存パッケージを GitHub 最新版に更新（内部的に `GitHubInstallPackage` と同一） |
+### GitHubReadFile[packageName, path, opts]
+GitHub 上のファイルを読み取る。
+→ String | ByteArray | Failure
+Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, ReturnType -> "Text" ("Text" | "ByteArray" | "Bytes"), Fallback -> False
 
-`GitHubInstallPackage` のコピー先振り分けルール:
-- **パターン A（自分のリポジトリ）**: RepoDB に `owner` が未登録。全ファイル・全フォルダを `$packageDirectory` へそのままコピー。`excludePatterns` に該当する既存ファイルは保護
-- **パターン B（リモート + `_info` フォルダあり）**: `README.md` をスキップし、それ以外を `$packageDirectory` へコピー。`excludePatterns` に該当する既存ファイルは保護
-- **パターン C（リモート + `_info` フォルダなし）**: `.wl` は `$packageDirectory` へ直接コピー、その他は `name_info/originals/` へ格納し `doc_options.json` にマッピングを保存
+### GitHubReadLocalFile[packageName, path]
+ローカルファイルを常に UTF-8 でデコードして読み取る。`path` 省略時はパッケージの .wl ファイルを読む。`ReadString` と異なり日本語環境で文字化けしない。
+→ String | Failure
 
-### グローバル変数
+## プル・コミット・PR
 
-| シグネチャ | 型 | 説明 |
-|---|---|---|
-| `$GitHubLicenseHolder` | `String` | MIT ライセンスの著作権者名。空文字列 `""` の場合は README.md にライセンスセクションを挿入しない。例: `$GitHubLicenseHolder = "Katsunobu Imai"` |
+### GitHubPull[packageName, opts]
+指定ブランチのリポジトリ内容をローカル GitHub 作業フォルダへ取得する。
+→ Association | Failure
+Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, Clean -> False (取得前に既存ローカルファイルを削除するか)
+
+### GitHubCommit[packageName, message, opts]
+ローカル GitHub 作業フォルダの内容を GitHub の指定ブランチへコミットする。複数ファイルを blob/tree/commit/ref 更新の流れでまとめて反映する。
+→ Association | Failure
+Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic (Automatic でリポジトリの default branch を自動使用), CreateBranch -> Automatic (Automatic は Branch ≠ BaseBranch なら True), LocalRepoPath -> Automatic, IncludePackageFile -> True, PackageFile -> Automatic, Author -> Automatic (<|"name"->..., "email"->...|>), Committer -> Automatic, Force -> False (ref 更新時に fast-forward 制約を無視するか), DeleteMissing -> False (ローカルに存在しないリモート blob を削除対象として tree に含めるか), Fallback -> False
+
+### GitHubCreatePullRequest[packageName, title, opts]
+Pull Request を作成する。
+→ Association | Failure
+Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, Head -> Automatic (Automatic は Branch を使用), Body -> "", Draft -> False, MaintainerCanModify -> True, Fallback -> False
+
+### GitHubRefreshAndCommit[packageName, message, opts]
+`upload_manifest.json` に基づき対象ファイル群をローカル GitHub 作業フォルダへコピーし、GitHub へコミットする。`_info/docs/README.md` が変更されていればトップレベル `README.md` も自動更新する。
+→ Association | Failure
+Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, CreateBranch -> Automatic, LocalRepoPath -> Automatic, IncludePackageFile -> True, PackageFile -> Automatic, ExtraDirectories -> {}, Author -> Automatic, Committer -> Automatic, Force -> False, DeleteMissing -> False, Fallback -> False
+
+### GitHubSubmitPullRequest[packageName, title, message, opts]
+refresh → ブランチ作成 → commit → PR 作成を一発で実行する。
+→ Association | Failure
+Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, CreateBranch -> Automatic, Body -> "", Draft -> False, MaintainerCanModify -> True, LocalRepoPath -> Automatic, IncludePackageFile -> True, PackageFile -> Automatic, ExtraDirectories -> {}, Author -> Automatic, Committer -> Automatic, Force -> False, DeleteMissing -> False, Fallback -> False
+例: `GitHubSubmitPullRequest["fact", "Fix bug", "バグ修正", Body -> "詳細説明", Branch -> "feature/fix"]`
+
+## インストール・更新
+
+### GitHubInstallPackage[packageName, opts]
+GitHub から `$packageDirectory` にパッケージを初回ダウンロードする。インストール後は `GitHubUpdatePackage` / `GitHubCommitDataset` / `GitHubSubmitPullRequest` 等がパッケージ名だけでリモートリポジトリに対して動作する。
+→ Association | Failure
+Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, Fallback -> False
+
+### GitHubInstallPackage[packageName, url, opts]
+他者のリポジトリ URL からインストールする。
+例: `GitHubInstallPackage["ResistorBuilder", "https://github.com/dzhang314/ResistorBuilder"]`
+→ Association | Failure
+Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, Fallback -> False
+
+### GitHubUpdatePackage[packageName, opts]
+既存パッケージを GitHub の最新に更新する。
+→ Association | Failure
+Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, Fallback -> False
+
+## リポジトリ名データベース
+
+### GitHubRepoDB[]
+`GithubRepositories/repo_database.json` を読み込み、全レコードを Association で返す。
+→ Association
+
+### GitHubRepoDBSet[packageName, repoName]
+パッケージ名と GitHub リポジトリ名の対応を DB に登録する。日本語パッケージ名に英語リポジトリ名を指定するときに使う。
+→ String (DB ファイルパス)
+
+### GitHubRepoDBSet[packageName, repoName, owner]
+owner も含めて登録する。
+→ String
+
+### GitHubRepoDBLookup[packageName]
+DB からリポジトリ名を解決する。未登録なら packageName をそのまま返す。
+→ String
+
+## PR 管理
+
+### GitHubListPullRequests[packageName, opts]
+オープンな PR 一覧を緊急度・依存関係でソートして返す。
+→ List | Failure
+Options: Owner -> Automatic, Repository -> Automatic, Fallback -> False
+
+### GitHubPullRequestDataset[packageName, opts]
+PR 一覧を Review/Pull/Merge/Close ボタン付き Dataset (Grid) で返す。ノートブック上でインタラクティブ操作可能。
+→ Grid | Failure
+Options: Owner -> Automatic, Repository -> Automatic, Fallback -> False
+
+### GitHubMergePullRequest[packageName, prNumber, reason]
+PR をマージする。
+→ Association | Failure
+
+### GitHubClosePullRequest[packageName, prNumber, reason]
+PR をクローズする。
+→ Association | Failure
+
+### GitHubReviewPullRequest[packageName, prNumber]
+PR のコードをダウンロードし、レビュー用コードをノートブックに出力する。
+→ Null | Failure
+
+## コミット履歴
+
+### GitHubListCommits[packageName, opts]
+リポジトリのコミット履歴をリストで返す。
+→ List | Failure
+Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, MaxItems -> 30, Fallback -> False
+
+### GitHubCommitDataset[packageName, opts]
+コミット履歴を Review/Pull/Revert ボタン付き Grid で表示する。起動時に現在の作業状態をローカル最新版スナップショットとして保存する。#0 行の Pull でスナップショットに復元可能。
+→ Grid | Failure
+Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, MaxItems -> 30, Fallback -> False
+
+### GitHubReviewCommit[packageName, sha]
+指定コミットの詳細・差分をノートブックに表示する。
+→ Null | Failure
+
+### GitHubRevertCommit[packageName, sha]
+指定コミットの変更を元に戻すリバートコミットを作成する。
+→ Association | Failure
 
 ## オプション一覧
 
-### リポジトリ識別
-
-| オプション | 既定値 | 対象関数 | 説明 |
-|---|---|---|---|
-| `Owner` | `Automatic` | `GitHubCreateRepository` 以外の全公開関数 | GitHub オーナー名。Automatic → RepoDB に owner 登録があればそちらを優先、なければトークンから自動取得 |
-| `Repository` | `Automatic` | 全般 | リポジトリ名。Automatic → DB に英語名があればそちらを使用、なければ `packageName`。非 ASCII 名は自動翻訳 |
-| `Branch` | `Automatic` | Commit/Pull/PR/Revert/ListCommits/CommitDataset/Install/Update | 操作対象ブランチ。Automatic → `BaseBranch` と同じ |
-| `BaseBranch` | `Automatic` | Commit/Pull/PR/Revert/ListCommits/CommitDataset/Install/Update | ベースブランチ。Automatic → リポジトリの default branch を API から自動取得 |
-| `MaxItems` | `30` | `GitHubListCommits` / `GitHubCommitDataset` | 取得するコミット数の上限（最大 100） |
-
-### リポジトリ作成
-
 | オプション | 既定値 | 説明 |
 |---|---|---|
-| `Public` | `False` | `True` にすると公開リポジトリを作成 |
-| `Description` | `""` | リポジトリの説明文 |
-| `Homepage` | `None` | ホームページ URL |
-| `AutoInit` | `True` | README 付きで初期化するか |
-| `GitignoreTemplate` | `None` | GitHub の gitignore テンプレート名 |
-| `LicenseTemplate` | `None` | GitHub の license テンプレート名 |
+| Owner | Automatic | GitHub ユーザー名/組織名。Automatic は API トークンから取得 |
+| Repository | Automatic | リポジトリ名。Automatic は packageName を使用 |
+| Public | False | リポジトリを公開にするか |
+| Description | "" | リポジトリの説明 |
+| Homepage | None | リポジトリの homepage URL |
+| AutoInit | True | README 付きで初期化するか |
+| GitignoreTemplate | None | GitHub の gitignore テンプレート名 |
+| LicenseTemplate | None | GitHub のライセンステンプレート名 |
+| Branch | Automatic | 操作対象ブランチ。Automatic は BaseBranch を使用 |
+| BaseBranch | Automatic | 基底ブランチ。Automatic はリポジトリの default branch を API から取得 |
+| CreateBranch | Automatic | ブランチが存在しなければ BaseBranch から新規作成するか。Automatic は Branch ≠ BaseBranch なら True |
+| LocalRepoPath | Automatic | ローカル GitHub 作業フォルダの明示指定 |
+| PackageFile | Automatic | packageName.wl のパスを明示指定 |
+| IncludePackageFile | True | コミット前に packageName.wl をローカル作業フォルダへコピーするか |
+| ReturnType | "Text" | GitHubReadFile の戻り値型。"Text" \| "ByteArray" \| "Bytes" |
+| Clean | False | GitHubPull 時に既存ローカルファイルを先に削除するか |
+| Force | False | ref 更新時に fast-forward 制約を無視するか |
+| DeleteMissing | False | ローカルに存在しないリモート blob を削除対象として tree に含めるか |
+| Head | Automatic | PR の head ブランチ。Automatic は Branch を使用 |
+| Body | "" | PR 本文 |
+| Draft | False | PR を draft として作成するか |
+| MaintainerCanModify | True | PR で maintainers に head branch の編集を許可するか |
+| Author | Automatic | コミット author `<\|"name"->..., "email"->...\|>` |
+| Committer | Automatic | コミット committer `<\|"name"->..., "email"->...\|>` |
+| ExtraDirectories | {} | manifest の directories に永続追加するディレクトリリスト |
+| MaxItems | 30 | GitHubListCommits / GitHubCommitDataset で取得するコミット数の上限 |
+| Fallback | False | True の場合 Claude Code 利用不可時に代替モデルを試行する |
 
-### コミット制御
+## 使用パターン
 
-| オプション | 既定値 | 対象関数 | 説明 |
-|---|---|---|---|
-| `CreateBranch` | `Automatic` | `GitHubCommit` / `GitHubRefreshAndCommit` | ブランチ不在時に `BaseBranch` から作成するか。Automatic → `Branch ≠ BaseBranch` なら True |
-| `Force` | `False` | `GitHubCommit` / `GitHubRefreshAndCommit` | ref 更新時に fast-forward 制約を無視するか |
-| `DeleteMissing` | `False` | `GitHubCommit` / `GitHubRefreshAndCommit` / `GitHubSubmitPullRequest` | ローカルに無いリモート blob を削除するか |
-| `Author` | `Automatic` | `GitHubCommit` / `GitHubRefreshAndCommit` / `GitHubSubmitPullRequest` | コミット author `<\|"name"->…, "email"->…\|>` |
-| `Committer` | `Automatic` | `GitHubCommit` / `GitHubRefreshAndCommit` / `GitHubSubmitPullRequest` | コミット committer |
-| `ExtraDirectories` | `{}` | `GitHubCreateRepository` / `GitHubRefreshAndCommit` | `upload_manifest.json` の `directories` に永続追加するディレクトリのリスト。例: `ExtraDirectories -> {"Claude Directives"}` |
+```mathematica
+(* ロード *)
+Block[{$CharacterEncoding = "UTF-8"}, Needs["GitHubREST`", "github.wl"]]
 
-### ローカルパス / ファイル
+(* 新規リポジトリ作成 *)
+GitHubCreateRepository["fact", Public -> False]
 
-| オプション | 既定値 | 対象関数 | 説明 |
-|---|---|---|---|
-| `LocalRepoPath` | `Automatic` | `GitHubEnsureLocalRepo` / `GitHubRefreshLocalPackageGroup` / `GitHubRefreshLocalPackage` / `GitHubCreateRepository` / `GitHubCommit` / `GitHubRefreshAndCommit` / `GitHubSubmitPullRequest` / `GitHubPull` | ローカル作業フォルダのパスを明示指定 |
-| `PackageFile` | `Automatic` | `GitHubRefreshLocalPackage` / `GitHubCreateRepository` / `GitHubCommit` | `packageName.wl` のパスを明示指定 |
-| `IncludePackageFile` | `True` | `GitHubCommit` / `GitHubCreateRepository` | コミット前にマニフェストに基づくグループリフレッシュを実行するか |
-| `Clean` | `False` | `GitHubPull` | Pull 前に既存ローカルファイルを削除するか |
+(* 更新コミット *)
+GitHubRefreshAndCommit["fact", "Update fact"]
 
-### ファイル読み取り / PR
+(* PR 作成 *)
+GitHubSubmitPullRequest["fact", "Fix bug", "バグ修正", Branch -> "feature/fix"]
 
-| オプション | 既定値 | 対象関数 | 説明 |
-|---|---|---|---|
-| `ReturnType` | `"Text"` | `GitHubReadFile` | `"Text"` / `"ByteArray"` / `"Bytes"` |
-| `Head` | `Automatic` | `GitHubCreatePullRequest` | PR の head ブランチ。Automatic → `Branch` |
-| `Body` | `""` | `GitHubCreatePullRequest` / `GitHubSubmitPullRequest` | PR 本文 |
-| `Draft` | `False` | `GitHubCreatePullRequest` / `GitHubSubmitPullRequest` | ドラフト PR として作成するか |
-| `MaintainerCanModify` | `True` | `GitHubCreatePullRequest` / `GitHubSubmitPullRequest` | maintainer による head 編集を許可するか |
+(* 他者リポジトリからインストール *)
+GitHubInstallPackage["ResistorBuilder", "https://github.com/dzhang314/ResistorBuilder"]
 
-### エラーハンドリング / フォールバック
+(* 日本語パッケージ名のリポジトリ名登録 *)
+GitHubRepoDBSet["掛け算", "multiplication-table"]
 
-| オプション | 既定値 | 対象関数 | 説明 |
-|---|---|---|---|
-| `Fallback` | `False` | 全公開関数 | `True` にすると Claude Code が利用不可の場合にフォールバック処理を有効化する。リポジトリ名の自動翻訳（非 ASCII パッケージ名）等で Claude API を呼ぶ際に、代替モデルや `Transliterate` へのフォールバックを許可する。`False`（既定）の場合は API エラー時に `Failure` を返して処理を停止する |
+(* コミット履歴インタラクティブ表示 *)
+GitHubCommitDataset["fact"]
 
-## 内部実装メモ
+(* PR 一覧インタラクティブ表示 *)
+GitHubPullRequestDataset["fact"]
+```
 
-ファイルパス操作は `FileNameSplit` / `FileNameJoin` を使用し、OS 依存の `$PathnameSeparator` や `"\\"` による文字列置換を行わない。Git パス（スラッシュ区切り）への変換は `iNormalizeGitPath` が `FileNameSplit` + `"/"` 結合で処理する。これにより Windows / macOS / Linux 間でのパス不整合を防止している。
+## 認証
 
-JSON 出力では `iForceASCIIJSON` により非 ASCII 文字を `\uXXXX` エスケープに変換し、Windows 環境の ShiftJIS エンコーディング問題を回避している。`iEncodeJSONBody` は `ExportString[..., "RawJSON"]` の出力を検査し、UTF-8 バイト列として再デコードしてから `\uXXXX` エスケープを適用する。
+```mathematica
+NBAccess`NBGetAPIKey["github"]  (* GitHub アクセストークン取得 *)
+```
 
-ボタン評価の二重実行防止には `$iGitHubEvalGuard` を使用し、`WithCleanup` で確実にガードを解除する。
+## ローカルフォルダ構成
 
-ローカルスナップショットは `GithubRepositories/_local_snapshot/name/` に保存され、各ファイルの SHA-256 ハッシュを `_snapshot_hashes.json` に記録する。`GitHubCommitDataset` の #0 行から復元する際、スナップショット時点からの変更を検出し、変更ファイルがあれば上書き前に警告を表示する。
-
-`GitHubCommit` の blob 作成ループでは `Catch`/`Throw` パターンでエラーを確実に伝播する。ファイル読み込み失敗 (`FailureQ[ba]`)、blob API 失敗 (`FailureQ[blobResp]`)、blob SHA 欠落（空文字列含む）のいずれかが発生すると即座に `Throw` で脱出し、呼び出し元に `Failure` を返す。全 blob 作成後に `entries` が空の場合は `"EmptyEntries"` エラーを返す。`newTreeSHA` の検証でも空文字列を不正値として扱い、`"MissingNewTreeSHA"` エラーに `TreeResponse` を含めて返す。
+```
+$packageDirectory/
+  packageName.wl                          ← パッケージ本体
+  packageName_info/
+    upload_manifest.json                  ← アップロード対象ファイル・ディレクトリ一覧
+    docs/README.md                        ← GitHub トップ README.md に自動同期
+  GithubRepositories/
+    packageName/                          ← ローカル GitHub 作業フォルダ
+    _local_snapshot/packageName/          ← GitHubCommitDataset 起動時スナップショット
+    repo_database.json                    ← 日本語パッケージ名 → 英語リポジトリ名 DB
