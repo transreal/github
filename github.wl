@@ -240,7 +240,7 @@ ClearAll[
   iDefaultHeaders, iParseBody, iAPICall, iAccessToken, iResolveOwner,
   iResolveRepository, iResolveBranch, iPackageDirectory, iLocalRepoPath,
   iPackageFilePath, iEnsureDirectory, iEncodePathPreservingSlash,
-  iNormalizeGitPath, iGetRef, iCreateRef, iUpdateRef, iGetCommitObject,
+  iNormalizeGitPath, iGetRef, iCreateRef, iUpdateRef, iCommitAndUpdateRef, iGetCommitObject,
   iCreateBlob, iCreateTree, iCreateCommit, iGetTreeRecursive,
   iReadLocalByteArray, iWriteLocalByteArray, iRelativeGitPath, iListLocalFiles,
   iNormalizePerson, iDecodeGitHubContent, iBranchIfMissing, iGetRepoInfo,
@@ -526,6 +526,48 @@ iUpdateRef[token_String, owner_String, repo_String, branch_String, sha_String, f
     "repos/" <> owner <> "/" <> repo <> "/git/refs/heads/" <> iEncodePathPreservingSlash[branch],
     token,
     <|"sha" -> sha, "force" -> TrueQ[force]|>
+  ];
+
+(* 422 競合リトライ付きコミット + ref 更新。
+   並列実行で head SHA がずれた場合、head を再取得して
+   コミットを作り直す。最大 maxRetries 回リトライ。 *)
+iCommitAndUpdateRef[
+    token_String, owner_String, repo_String, branch_String,
+    message_String, newTreeSHA_String, headSHA0_String,
+    author_, committer_, force_, maxRetries_Integer: 3] :=
+  Module[{headSHA = headSHA0, commitResp, newCommitSHA, updateResp, k, ref},
+    Do[
+      commitResp = iCreateCommit[token, owner, repo, message, newTreeSHA, headSHA, author, committer];
+      If[FailureQ[commitResp], Return[commitResp, Module]];
+      newCommitSHA = Lookup[commitResp["Body"], "sha", Missing["NotAvailable"]];
+      If[!StringQ[newCommitSHA],
+        Return[iFailure["MissingCommitSHA",
+          "新しい commit SHA を取得できませんでした。", <||>], Module]
+      ];
+      updateResp = iUpdateRef[token, owner, repo, branch, newCommitSHA, force];
+      If[!FailureQ[updateResp],
+        Return[<|"CommitSHA" -> newCommitSHA, "UpdateRef" -> updateResp|>, Module]
+      ];
+      (* 422 以外のエラーはそのまま返す *)
+      If[iStatusCode[updateResp] =!= 422,
+        Return[updateResp, Module]
+      ];
+      (* 422: head が競合で変わった → 再取得してリトライ *)
+      ref = iGetRef[token, owner, repo, branch];
+      If[FailureQ[ref], Return[ref, Module]];
+      headSHA = Lookup[Lookup[ref["Body"], "object", <||>], "sha", ""];
+      If[!StringQ[headSHA] || headSHA === "",
+        Return[iFailure["MissingHeadSHA",
+          "リトライ中に head SHA を再取得できませんでした。",
+          <|"Branch" -> branch, "Attempt" -> k|>], Module]
+      ],
+      {k, 1, maxRetries}
+    ];
+    (* maxRetries 回すべて 422 だった場合 *)
+    iFailure["UpdateRefConflict",
+      "ref 更新が " <> ToString[maxRetries] <> " 回連続で競合しました (422)。\n" <>
+      "並列実行を避けるか、時間をおいて再試行してください。",
+      <|"Branch" -> branch, "LastHeadSHA" -> headSHA|>]
   ];
 
 iGetCommitObject[token_String, owner_String, repo_String, commitSHA_String] :=
@@ -1399,7 +1441,7 @@ GitHubCommit[packageName_String, message_String, opts : OptionsPattern[]] :=
   Module[{token, owner, repo, branch, baseBranch, createBranchQ, localDir, repoInfo, ref,
           headSHA, commitObj, baseTreeSHA, localFiles, entries = {},  localPaths,
           relPath, ba, blobResp, blobSHA, remoteTree, remotePaths, deletePaths,
-          treeResp, newTreeSHA, commitResp, newCommitSHA, updateResp, author, committer,
+          treeResp, newTreeSHA, author, committer,
           includePackageResult},
     (* Fallback オプションを $currentUseFallback に反映 *)
     If[TrueQ[OptionValue[Fallback]],
@@ -1497,24 +1539,25 @@ GitHubCommit[packageName_String, message_String, opts : OptionsPattern[]] :=
     ];
     author = iNormalizePerson[OptionValue[Author]];
     committer = iNormalizePerson[OptionValue[Committer]];
-    commitResp = iCreateCommit[token, owner, repo, message, newTreeSHA, headSHA, author, committer];
-    If[FailureQ[commitResp], Return[commitResp]];
-    newCommitSHA = Lookup[commitResp["Body"], "sha", Missing["NotAvailable"]];
-    If[!StringQ[newCommitSHA],
-      Return[iFailure["MissingCommitSHA", "新しい commit SHA を取得できませんでした。", <||>]]
-    ];
-    updateResp = iUpdateRef[token, owner, repo, branch, newCommitSHA, OptionValue[Force]];
-    If[FailureQ[updateResp], Return[updateResp]];
-    <|
-      "Package" -> packageName,
-      "Owner" -> owner,
-      "Repository" -> repo,
-      "Branch" -> branch,
-      "CommitMessage" -> message,
-      "CommitSHA" -> newCommitSHA,
-      "TreeSHA" -> newTreeSHA,
-      "UpdatedRef" -> updateResp["Body"]
-    |>
+    (* 422 競合リトライ付きコミット + ref 更新 *)
+    Module[{cuResult},
+      cuResult = iCommitAndUpdateRef[
+        token, owner, repo, branch,
+        message, newTreeSHA, headSHA,
+        author, committer, TrueQ[OptionValue[Force]]
+      ];
+      If[FailureQ[cuResult], Return[cuResult]];
+      <|
+        "Package" -> packageName,
+        "Owner" -> owner,
+        "Repository" -> repo,
+        "Branch" -> branch,
+        "CommitMessage" -> message,
+        "CommitSHA" -> cuResult["CommitSHA"],
+        "TreeSHA" -> newTreeSHA,
+        "UpdatedRef" -> cuResult["UpdateRef"]["Body"]
+      |>
+    ]
   ];
 
 Options[GitHubCreatePullRequest] = {
@@ -3015,19 +3058,20 @@ GitHubRevertCommit[packageName_String, commitSHA_String, reason_String:"",
     (* \:30ea\:30d0\:30fc\:30c8\:30b3\:30df\:30c3\:30c8\:3092\:4f5c\:6210: \:89aa\:306e tree \:3092\:4f7f\:3044\:3001\:73fe\:5728 HEAD \:3092\:89aa\:3068\:3059\:308b *)
     newCommitMsg = "Revert " <> StringTake[commitSHA, UpTo[7]];
     If[reason =!= "", newCommitMsg = newCommitMsg <> ": " <> reason];
-    newCommit = iCreateCommit[token, owner, repo,
-      newCommitMsg, parentTreeSHA, headSHA, Automatic, Automatic];
-    If[FailureQ[newCommit], Return[newCommit]];
-    (* \:30d6\:30e9\:30f3\:30c1\:3092\:66f4\:65b0 *)
-    updateResp = iUpdateRef[token, owner, repo, branch,
-      Lookup[newCommit["Body"], "sha", ""]];
-    If[FailureQ[updateResp], Return[updateResp]];
-    <|"Action" -> "Revert", "Package" -> packageName,
-      "RevertedCommit" -> StringTake[commitSHA, UpTo[7]],
-      "ParentCommit" -> StringTake[parentSHA, UpTo[7]],
-      "NewCommit" -> StringTake[Lookup[newCommit["Body"], "sha", ""], UpTo[7]],
-      "Branch" -> branch,
-      "Reason" -> reason|>
+    Module[{cuResult},
+      cuResult = iCommitAndUpdateRef[
+        token, owner, repo, branch,
+        newCommitMsg, parentTreeSHA, headSHA,
+        Automatic, Automatic, False
+      ];
+      If[FailureQ[cuResult], Return[cuResult]];
+      <|"Action" -> "Revert", "Package" -> packageName,
+        "RevertedCommit" -> StringTake[commitSHA, UpTo[7]],
+        "ParentCommit" -> StringTake[parentSHA, UpTo[7]],
+        "NewCommit" -> StringTake[cuResult["CommitSHA"], UpTo[7]],
+        "Branch" -> branch,
+        "Reason" -> reason|>
+    ]
   ];
 
 (* ============================================================
