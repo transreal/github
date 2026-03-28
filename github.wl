@@ -1521,7 +1521,7 @@ GitHubCommit[packageName_String, message_String, opts : OptionsPattern[]] :=
       deletePaths = Complement[Select[remotePaths, StringQ], localPaths];
       entries = Join[
         entries,
-        (<|"path" -> #, "mode" -> "100644", "type" -> "blob", "sha" -> None|> & /@ deletePaths)
+        (<|"path" -> #, "mode" -> "100644", "type" -> "blob", "sha" -> Null|> & /@ deletePaths)
       ];
     ];
     (* entries が空なら blob 作成で問題が起きた可能性がある *)
@@ -3073,65 +3073,6 @@ GitHubRevertCommit[packageName_String, commitSHA_String, reason_String:"",
         "Reason" -> reason|>
     ]
   ];
-
-(* ============================================================
-   ロード時メッセージ
-   ============================================================ *)
-
-Print[Style["GitHubREST パッケージ \[LongDash] GitHub REST API ユーティリティ", Bold]];
-Print[
-  "  GitHubPackageURL[package]                \[RightArrow] パッケージの GitHub URL\n" <>
-  "  GitHubPackageURLs[]                      \[RightArrow] 全パッケージの GitHub URL 一覧\n" <>
-  "  GitHubInstallPackage[package]            \[RightArrow] GitHub から $packageDirectory へ初回ダウンロード\n" <>
-  "  GitHubInstallPackage[package, url]       \[RightArrow] 他人のリポジトリからインストール\n" <>
-  "  GitHubUpdatePackage[package]             \[RightArrow] パッケージを GitHub 最新に更新\n" <>
-  "  GitHubPullRequestDataset[package]        \[RightArrow] PR 一覧 (Review/Merge/Close ボタン付き)\n" <>
-  "  GitHubCommitDataset[package]             \[RightArrow] コミット履歴 (Review/Pull/Revert ボタン付き)\n" <>
-  "  GitHubReviewCommit[package, sha]         \[RightArrow] コミット詳細・差分を表示\n" <>
-  "  GitHubRevertCommit[package, sha, reason] \[RightArrow] コミットをリバート\n" <>
-  "  GitHubRepoDBSet[package, repoName]       \[RightArrow] 日本語パッケージ名 → 英語リポジトリ名を登録\n" <>
-  "  GitHubRepoPath[package]                  \[RightArrow] ローカル GitHub 作業フォルダのパス (GithubRepositories/)\n" <>
-  "  GitHubEnsureLocalRepo[package]           \[RightArrow] ローカル GitHub 作業フォルダを作成\n" <>
-  "  GitHubReadManifest[package]              \[RightArrow] upload_manifest.json を読取\n" <>
-  "  GitHubRefreshLocalPackageGroup[package]  \[RightArrow] manifest に基づきファイル群を local repo へコピー\n" <>
-  "  GitHubRefreshLocalPackage[package]       \[RightArrow] 単一 .wl ファイルを local repo へコピー (後方互換)\n" <>
-  "  GitHubCreateRepository[package]          \[RightArrow] GitHub に新規リポジトリを作成 + manifest コミット\n" <>
-  "  GitHubReadFile[package, path]            \[RightArrow] GitHub 上のファイル読取\n" <>
-  "  GitHubReadLocalFile[package, path]       \[RightArrow] ローカルファイルを UTF-8 で読取\n" <>
-  "  GitHubPull[package]                      \[RightArrow] GitHub から local repo へ取得\n" <>
-  "  GitHubCommit[package, message]           \[RightArrow] local repo の内容を GitHub へコミット\n" <>
-  "  GitHubCreatePullRequest[package, title]  \[RightArrow] pull request を作成\n" <>
-  "  GitHubRefreshAndCommit[package, message] \[RightArrow] グループ refresh + commit を一発で実行\n" <>
-  "  GitHubSubmitPullRequest[package, title, message] \[RightArrow] グループ refresh + branch + commit + PR\n" <>
-  "\n--- 認証 ---\n" <>
-  "  NBAccess`NBGetAPIKey[\"github\"]        \[RightArrow] GitHub アクセストークン取得\n" <>
-  "\n--- 既定ローカル構成 ---\n" <>
-  "  GitHubRepoPath[\"fact\"]               \[RightArrow] FileNameJoin[{$packageDirectory, \"GithubRepositories\", \"fact\"}]\n" <>
-  "  upload_manifest.json                   \[RightArrow] $packageDirectory/fact_info/upload_manifest.json\n" <>
-  "  _info/docs/README.md                   \[RightArrow] GitHub リポジトリトップの README.md に自動同期\n" <>
-  "\n--- インストール (初回) ---\n" <>
-  "  1. claudecode.wl, NBAccess.wl, github.wl を $packageDirectory に手動配置\n" <>
-  "  2. Block[{$CharacterEncoding = \"UTF-8\"}, Needs[\"GitHubREST`\", \"github.wl\"]]\n" <>
-  "  3. GitHubInstallPackage[\"other-package\"] で自分のパッケージをダウンロード\n" <>
-  "  4. GitHubInstallPackage[\"pkg\", \"https://github.com/user/repo\"] で他人のリポジトリをインストール\n" <>
-  "\n--- 他人のリポジトリを使う流れ ---\n" <>
-  "  GitHubInstallPackage[\"pkg\", \"https://github.com/alice/repo\"]\n" <>
-  "  GitHubUpdatePackage[\"pkg\"]                              \[RightArrow] 最新を pull\n" <>
-  "  GitHubCommitDataset[\"pkg\"]                              \[RightArrow] コミット履歴を確認\n" <>
-  "  GitHubSubmitPullRequest[\"pkg\", \"Fix\", \"Bug fix\"]        \[RightArrow] PR 送信\n" <>
-  "\n--- よく使う流れ ---\n" <>
-  "  GitHubCreateRepository[\"fact\", Public -> False]\n" <>
-  "  GitHubRefreshAndCommit[\"fact\", \"Update fact\"]\n" <>
-  "  GitHubSubmitPullRequest[\"fact\", \"Update\", \"Update fact\"]\n" <>
-  "  GitHubPull[\"fact\"]\n" <>
-  "\n--- 主なオプション ---\n" <>
-  "  Owner, Repository, Public, Description, Homepage,\n" <>
-  "  AutoInit, GitignoreTemplate, LicenseTemplate,\n" <>
-  "  Branch, BaseBranch, CreateBranch,\n" <>
-  "  Body, Draft, MaintainerCanModify,\n" <>
-  "  IncludePackageFile, LocalRepoPath, PackageFile, ReturnType,\n" <>
-  "  Author, Committer, Force, DeleteMissing\n"
-];
 
 End[];
 EndPackage[];
