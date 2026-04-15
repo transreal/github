@@ -248,13 +248,14 @@ ClearAll[
   iBranchReadFailure, iRepositoryURL, iSlugifyBranchName, iAutoPRBranchName,
   iForceASCIIJSON, iEncodeJSONBody,
   iManifestPath, iDefaultManifest, iReadManifest, iWriteManifest,
-  iEnsureManifest, iDetectPackageType, iCopyDirectoryFiltered, iAddExtraDirectories,
+  iEnsureManifest, iDetectPackageType, iDiscoverAuxWLFiles,
+  iCopyDirectoryFiltered, iAddExtraDirectories,
   iRefreshPackageGroup, iSyncReadme, iMatchExcludePattern, iInfoDirName,
   iLocalSnapshotDir, iSaveLocalSnapshot, iRestoreLocalSnapshot,
   iCopyLocalRepoToPackageDir, iCleanManifestFilesInPkgDir,
   iDetectNewerThanSnapshot, iSnapshotHashPath,
   iDefaultExcludePatterns, iMergedExcludePatterns,
-  iCopyDirectoryPreservingExcluded,
+  iCopyDirectoryPreservingExcluded, iCleanStaleLocalFiles,
   iTranslateToEnglishRepoName, iSlugifyRepoName, iCheckRepoExists,
   iParseGitHubURL, iRepoDBOwnerLookup,
   iIsRemotePackage, iOriginalsDir, iSaveOriginals, iLoadOriginals,
@@ -311,7 +312,8 @@ iEncodeJSONBody[body_] :=
       (* コード > 255 — 既に正しい Unicode *)
       True, jsonRaw
     ];
-    StringToByteArray[iForceASCIIJSON[jsonStr], "UTF-8"]
+    (* 純 ASCII なら iForceASCIIJSON をスキップ (base64 blob 等の大容量で致命的遅延を回避) *)
+    StringToByteArray[If[hasNonASCII, iForceASCIIJSON[jsonStr], jsonStr], "UTF-8"]
   ];
 
 iFailureProperty[expr_, key_] := Quiet @ Check[expr[key], Missing["NotAvailable"]];
@@ -350,7 +352,8 @@ iParseBody[body_] := Which[
 ];
 
 iAPICall[method_String, path_String, token_String, body_: None, query_: <||>] :=
-  Module[{url, headers, reqAssoc, req, resp, status, rawBody, parsedBody, respHeaders},
+  Module[{url, headers, reqAssoc, req, resp, status, rawBody, parsedBody, respHeaders,
+          maxRetries = 3, k},
     url = iBuildURL[path, query];
     headers = Join[
       iDefaultHeaders[token],
@@ -363,7 +366,14 @@ iAPICall[method_String, path_String, token_String, body_: None, query_: <||>] :=
       ]
     ];
     req = HTTPRequest[url, reqAssoc];
-    resp = Quiet @ Check[URLRead[req], $Failed];
+    (* リトライ付き URLRead (タイムアウト 120秒、最大 3 回) *)
+    resp = $Failed;
+    Do[
+      resp = Quiet @ Check[URLRead[req, TimeConstraint -> 120], $Failed];
+      If[resp =!= $Failed && !FailureQ[resp], Break[]];
+      If[k < maxRetries, Pause[2 * k]],
+      {k, 1, maxRetries}
+    ];
     If[resp === $Failed || FailureQ[resp],
       Return[iFailure[
         "HTTPRequestFailed",
@@ -811,19 +821,31 @@ iRestoreOriginalsToRepo[packageName_String, localRepoDir_String] :=
 iManifestPath[packageName_String] :=
   FileNameJoin[{iPackageDirectory[], iInfoDirName[packageName], "upload_manifest.json"}];
 
+(* $packageDirectory 内の補助 .wl ファイルを検出する。
+   packageName_*.wl にマッチするファイル名のリストを返す。
+   (packageName.wl 本体は除く) *)
+iDiscoverAuxWLFiles[packageName_String] :=
+  Module[{pkgDir, pattern, found},
+    pkgDir = iPackageDirectory[];
+    pattern = packageName <> "_*.wl";
+    found = FileNames[pattern, {pkgDir}];
+    FileNameTake /@ found
+  ];
+
 (* マニフェストが無い場合のデフォルト構成
    パッケージ (.wl) の場合: files に packageName.wl, directories に packageName_info
    パクレット (フォルダ) の場合: directories に packageName と packageName_info *)
 iDefaultManifest[packageName_String] :=
-  Module[{pkgDir, wlPath, packletDir},
+  Module[{pkgDir, wlPath, packletDir, auxFiles},
     pkgDir = iPackageDirectory[];
     wlPath = FileNameJoin[{pkgDir, packageName <> ".wl"}];
     packletDir = FileNameJoin[{pkgDir, packageName}];
+    auxFiles = iDiscoverAuxWLFiles[packageName];
     Which[
       FileExistsQ[wlPath],
         <|
           "packageName" -> packageName,
-          "files" -> {packageName <> ".wl"},
+          "files" -> DeleteDuplicates[Join[{packageName <> ".wl"}, auxFiles]],
           "directories" -> {iInfoDirName[packageName]},
           "excludePatterns" -> {iInfoDirName[packageName] <> "/history/",
                                 iInfoDirName[packageName] <> "/references/"}
@@ -831,7 +853,7 @@ iDefaultManifest[packageName_String] :=
       DirectoryQ[packletDir],
         <|
           "packageName" -> packageName,
-          "files" -> {},
+          "files" -> auxFiles,
           "directories" -> {packageName, iInfoDirName[packageName]},
           "excludePatterns" -> {iInfoDirName[packageName] <> "/history/",
                                 iInfoDirName[packageName] <> "/references/"}
@@ -839,7 +861,7 @@ iDefaultManifest[packageName_String] :=
       True,
         <|
           "packageName" -> packageName,
-          "files" -> {packageName <> ".wl"},
+          "files" -> DeleteDuplicates[Join[{packageName <> ".wl"}, auxFiles]],
           "directories" -> {},
           "excludePatterns" -> {}
         |>
@@ -904,7 +926,8 @@ iReadManifest[packageName_String] :=
    - ファイルがあっても、パッケージ種別が変わっていたら更新して保存
    戻り値: 最新の manifest Association *)
 iEnsureManifest[packageName_String] :=
-  Module[{path, manifest, currentType, manifestType, newManifest},
+  Module[{path, manifest, currentType, manifestType, newManifest,
+          auxFiles, currentFiles, addedFiles},
     path = iManifestPath[packageName];
     currentType = iDetectPackageType[packageName];
 
@@ -939,6 +962,19 @@ iEnsureManifest[packageName_String] :=
       ];
       iWriteManifest[packageName, newManifest];
       Return[newManifest]
+    ];
+
+    (* 補助 .wl ファイルの自動検出・追加 *)
+    auxFiles = iDiscoverAuxWLFiles[packageName];
+    If[Length[auxFiles] > 0,
+      currentFiles = Lookup[manifest, "files", {}];
+      addedFiles = Complement[auxFiles, currentFiles];
+      If[Length[addedFiles] > 0,
+        manifest["files"] = DeleteDuplicates[Join[currentFiles, addedFiles]];
+        iWriteManifest[packageName, manifest];
+        Print["upload_manifest.json に補助ファイルを追加: " <>
+          StringRiffle[addedFiles, ", "]]
+      ]
     ];
 
     manifest
@@ -1043,6 +1079,35 @@ iCopyDirectoryFiltered[srcDir_String, dstBaseDir_String, relBase_String, exclude
     copied
   ];
 
+(* ソース側で削除されたファイルをローカルレポの各マニフェストディレクトリから削除する。
+   copiedDirFiles に含まれず exclude にも該当しないファイルが対象。 *)
+iCleanStaleLocalFiles[localDir_String, manifestDirs_List, copiedDirFiles_List, excludePatterns_List] :=
+  Module[{deletedFiles = {}, dirInLocal, allLocal, relPath},
+    Do[
+      dirInLocal = FileNameJoin[{localDir, dir}];
+      If[DirectoryQ[dirInLocal],
+        allLocal = Select[
+          Join[FileNames["*", dirInLocal, Infinity],
+               FileNames[".*", dirInLocal, Infinity]],
+          FileExistsQ[#] && !DirectoryQ[#] &
+        ];
+        Do[
+          relPath = iNormalizeGitPath[
+            dir <> "/" <> FileNameJoin[FileNameDrop[file, FileNameDepth[dirInLocal]]]
+          ];
+          If[!MemberQ[copiedDirFiles, relPath] &&
+             !iMatchExcludePattern[relPath, excludePatterns],
+            Quiet @ DeleteFile[file];
+            AppendTo[deletedFiles, relPath]
+          ],
+          {file, allLocal}
+        ]
+      ],
+      {dir, manifestDirs}
+    ];
+    deletedFiles
+  ];
+
 (* _info/docs/README.md をトップレベル README.md として同期する *)
 iSyncReadme[packageName_String, localDir_String] :=
   Module[{readmeSrc, readmeDst},
@@ -1058,17 +1123,22 @@ iSyncReadme[packageName_String, localDir_String] :=
 (* マニフェストに基づくグループリフレッシュの内部実装 *)
 iRefreshPackageGroup[packageName_String, localDir_String] :=
   Module[{manifest, pkgDir, copiedFiles = {}, copiedDirs = {}, excludePatterns,
+          deletedFiles = {}, deletedDirFiles = {},
           src, dst, readmeResult, restoredOriginals},
     manifest = iEnsureManifest[packageName];
     pkgDir = iPackageDirectory[];
     excludePatterns = iMergedExcludePatterns[packageName];
-    (* 個別ファイルのコピー *)
+    (* 個別ファイルのコピー (ソースが消えていればローカルからも削除) *)
     Do[
       src = FileNameJoin[{pkgDir, file}];
+      dst = FileNameJoin[{localDir, FileNameTake[src]}];
       If[FileExistsQ[src],
-        dst = FileNameJoin[{localDir, FileNameTake[src]}];
         Quiet @ CopyFile[src, dst, OverwriteTarget -> True];
-        AppendTo[copiedFiles, file]
+        AppendTo[copiedFiles, file],
+        If[FileExistsQ[dst],
+          Quiet @ DeleteFile[dst];
+          AppendTo[deletedFiles, file]
+        ]
       ],
       {file, Lookup[manifest, "files", {}]}
     ];
@@ -1083,6 +1153,9 @@ iRefreshPackageGroup[packageName_String, localDir_String] :=
       {dir, Lookup[manifest, "directories", {}]}
     ];
     (* originals の書き戻し: _info/originals/ → GithubRepositories/ の元の位置へ *)
+    (* その前にソース側で消えたファイルをローカルレポから削除 *)
+    deletedDirFiles = iCleanStaleLocalFiles[localDir,
+      Lookup[manifest, "directories", {}], copiedDirs, excludePatterns];
     restoredOriginals = iRestoreOriginalsToRepo[packageName, localDir];
     (* README.md の同期 *)
     readmeResult = iSyncReadme[packageName, localDir];
@@ -1092,6 +1165,8 @@ iRefreshPackageGroup[packageName_String, localDir_String] :=
       "Manifest" -> manifest,
       "CopiedFiles" -> copiedFiles,
       "CopiedDirectoryFiles" -> copiedDirs,
+      "DeletedFiles" -> deletedFiles,
+      "DeletedDirFiles" -> deletedDirFiles,
       "RestoredOriginals" -> restoredOriginals,
       "READMESynced" -> readmeResult
     |>

@@ -61,8 +61,47 @@ GitHubEnsureLocalRepo["mypackage"]
 
 ---
 
+### 複数ファイルのパッケージ対応（補助 `.wl` ファイルの自動収集）
+
+パッケージが複数の `.wl` ファイルで構成される場合、`<<リポジトリ名>>_<<追加文字列>>.wl` という命名規則に従ったファイルが `$packageDirectory` 内に存在すると、自動的に補助ファイルとして検出され、まとめてリポジトリに追加されます。
+
+**命名規則:**
+
+```
+$packageDirectory/
+  mypackage.wl              ← メインファイル
+  mypackage_helpers.wl      ← 補助ファイル（自動収集対象）
+  mypackage_utils.wl        ← 補助ファイル（自動収集対象）
+  mypackage_types.wl        ← 補助ファイル（自動収集対象）
+```
+
+**動作の詳細:**
+
+- `iDiscoverAuxWLFiles` がメインパッケージ名をプレフィックスとして持つ `<<パッケージ名>>_*.wl` ファイルを `$packageDirectory` から自動検索します。
+- 検出されたファイルは `upload_manifest.json` の `"files"` リストに自動的に追加されます（`GitHubReadManifest` 呼び出し時に更新）。
+- マニフェストに未登録の補助ファイル（`addedFiles`）は新規追加として記録されます。
+- `GitHubRefreshLocalPackageGroup` / `GitHubRefreshAndCommit` / `GitHubCreateRepository` 実行時に、メインファイルと補助ファイルがまとめてローカル作業フォルダへコピーされ、一括でコミットされます。
+
+**使用例:**
+
+```mathematica
+(* mypackage.wl, mypackage_helpers.wl, mypackage_utils.wl が $packageDirectory に存在する場合 *)
+
+(* マニフェストを確認（補助ファイルが自動追加されている） *)
+GitHubReadManifest["mypackage"]
+(* -> <|"files" -> {"mypackage.wl", "mypackage_helpers.wl", "mypackage_utils.wl"},
+       "directories" -> {}, "excludePatterns" -> {}|> *)
+
+(* 全ファイルをまとめてコミット *)
+GitHubRefreshAndCommit["mypackage", "feat: add helper modules"]
+```
+
+---
+
 ### `GitHubReadManifest`
 `packageName_info/upload_manifest.json` を読み、アップロード対象ファイル一覧を返します。ファイルが存在しない場合は自動生成します。パッケージ種別（`.wl` / パクレット）が変更された場合も自動的にマニフェストを更新します。
+
+`<<パッケージ名>>_*.wl` という命名規則に従う補助ファイルが `$packageDirectory` に存在する場合は、自動的に `"files"` リストに追加されます（上記「複数ファイルのパッケージ対応」を参照）。
 
 ```mathematica
 GitHubReadManifest["mypackage"]
@@ -170,12 +209,14 @@ GitHubCommit["mypackage", "feat: new feature", Branch -> "dev", CreateBranch -> 
 | `"MissingNewTreeSHA"` | 新しい tree SHA を取得できなかった |
 | `"NoLocalFiles"` | ローカル作業フォルダにファイルがない |
 
+**削除エントリの `"sha"` フィールド:** `DeleteMissing -> True` を使用する場合、削除対象ファイルの tree エントリの `"sha"` フィールドには `Null`（JSON `null` に対応）を指定します。`None` は JSON シリアライズできないため使用しないでください。
+
 主なオプション: `Branch`, `BaseBranch`, `CreateBranch`, `Force`, `DeleteMissing`, `Author`, `Committer`, `IncludePackageFile`, `Fallback`
 
 ---
 
 ### `GitHubRefreshAndCommit`
-`upload_manifest.json` に基づきファイルをコピーしてからコミットまで一括実行します。
+`upload_manifest.json` に基づきファイルをコピーしてからコミットまで一括実行します。`<<パッケージ名>>_*.wl` 形式の補助ファイルも自動的に含まれます。
 
 ```mathematica
 GitHubRefreshAndCommit["mypackage", "chore: sync files"]
@@ -431,13 +472,44 @@ GitHubSubmitPullRequest["pkg", "Fix", "Bug fix"]        (* PR 送信 *)
 
 ---
 
-## 10. Undo 再評価防止ガード
+## 10. 複数ファイルパッケージのワークフロー
+
+パッケージを複数の `.wl` ファイルに分割する場合は、`<<パッケージ名>>_<<追加文字列>>.wl` という命名規則に従います。これにより、補助ファイルが自動的に検出されてリポジトリにまとめて追加されます。
+
+```mathematica
+(* 例: mypackage を3ファイルに分割する場合 *)
+(* ファイル構成:
+   $packageDirectory/mypackage.wl          ← メインファイル
+   $packageDirectory/mypackage_core.wl     ← コアロジック
+   $packageDirectory/mypackage_ui.wl       ← UI コンポーネント
+*)
+
+(* マニフェストを確認: 補助ファイルが自動収集されている *)
+GitHubReadManifest["mypackage"]
+(* -> <|"files" -> {"mypackage.wl", "mypackage_core.wl", "mypackage_ui.wl"},
+       "directories" -> {}, "excludePatterns" -> {}|> *)
+
+(* 初回リポジトリ作成: 全ファイルが一括コミットされる *)
+GitHubCreateRepository["mypackage"]
+
+(* 変更をコミット: 全補助ファイルも含めて反映される *)
+GitHubRefreshAndCommit["mypackage", "feat: split into modules"]
+```
+
+**注意事項:**
+- 補助ファイルの命名は必ず `<<パッケージ名>>_` で始める必要があります（例: `mypackage_helpers.wl`）。
+- 命名規則に従わないファイルは自動収集されません。手動で `upload_manifest.json` の `"files"` リストに追加するか、`ExtraDirectories` オプションを使用してください。
+- 422 競合エラーが発生した場合（同時編集など）、内部で自動リトライが行われます。解決できない場合は「並列実行を避けるか、時間をおいて再試行してください」というメッセージが返されます。
+
+---
+
+## 11. Undo 再評価防止ガード
 
 `GitHubReviewPullRequest`、`GitHubReviewCommit`、および各 Grid のボタン操作には Undo 再評価防止ガードが組み込まれています。ノートブックの Undo 操作により同じアクションが二重に実行されることを防ぎます。ガードは `WithCleanup` で正常終了・異常終了のいずれの場合も自動的に解除されます。
 
 ---
 
-## 11. 主要オプション一覧
+## 12. 主要オプション一覧
 
 | オプション | 既定値 | 説明 |
 |---|---|---|
@@ -450,7 +522,7 @@ GitHubSubmitPullRequest["pkg", "Fix", "Bug fix"]        (* PR 送信 *)
 | `AutoInit` | `True` | 初期化時に README を含めるか |
 | `Clean` | `False` | Pull 時にローカルを先に削除するか |
 | `Force` | `False` | ref 更新を強制するか |
-| `DeleteMissing` | `False` | Commit 時にリモート専用ファイルを削除するか |
+| `DeleteMissing` | `False` | Commit 時にリモート専用ファイルを削除するか（削除エントリの `"sha"` には JSON `null` に対応する `Null` を指定。`None` は JSON シリアライズ不能なため使用不可） |
 | `ReturnType` | `"Text"` | `GitHubReadFile` の戻り値型（`"Text"` / `"ByteArray"` / `"Bytes"`） |
 | `LocalRepoPath` | `Automatic` | ローカル作業フォルダのパス |
 | `Author` | `Automatic` | コミット author `<\|"name"->..., "email"->...\|>` |
