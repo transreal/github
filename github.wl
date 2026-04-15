@@ -241,7 +241,7 @@ ClearAll[
   iResolveRepository, iResolveBranch, iPackageDirectory, iLocalRepoPath,
   iPackageFilePath, iEnsureDirectory, iEncodePathPreservingSlash,
   iNormalizeGitPath, iGetRef, iCreateRef, iUpdateRef, iCommitAndUpdateRef, iGetCommitObject,
-  iCreateBlob, iCreateTree, iCreateCommit, iGetTreeRecursive,
+  iCreateBlob, iGitBlobSHA, iCreateTree, iCreateCommit, iGetTreeRecursive,
   iReadLocalByteArray, iWriteLocalByteArray, iRelativeGitPath, iListLocalFiles,
   iNormalizePerson, iDecodeGitHubContent, iBranchIfMissing, iGetRepoInfo,
   iWaitForRepoInfo, iWaitForRef, iResolveBaseBranch, iRepoAccessFailure,
@@ -593,6 +593,16 @@ iCreateBlob[token_String, owner_String, repo_String, ba_ByteArray] :=
     "repos/" <> owner <> "/" <> repo <> "/git/blobs",
     token,
     <|"content" -> BaseEncode[ba], "encoding" -> "base64"|>
+  ];
+
+(* ローカルで git blob SHA-1 を計算する (blob <size>\0<content> のハッシュ) *)
+iGitBlobSHA[ba_ByteArray] :=
+  Module[{headerBytes, combined},
+    headerBytes = Join[
+      Normal[StringToByteArray["blob " <> ToString[Length[ba]], "UTF-8"]],
+      {0}];
+    combined = ByteArray[Join[headerBytes, Normal[ba]]];
+    Hash[combined, "SHA1", "HexString"]
   ];
 
 iCreateTree[token_String, owner_String, repo_String, baseTreeSHA_String, treeEntries_List] :=
@@ -1565,39 +1575,67 @@ GitHubCommit[packageName_String, message_String, opts : OptionsPattern[]] :=
     If[Length[localFiles] == 0,
       Return[iFailure["NoLocalFiles", "ローカル GitHub 作業フォルダにコミット対象ファイルがありません。", <|"LocalRepoPath" -> localDir|>]]
     ];
-    (* Catch/Throw で blob 作成エラーを確実に伝播 *)
-    Module[{blobError},
-      blobError = Catch[
-        Do[
-          relPath = iRelativeGitPath[localDir, file];
-          ba = iReadLocalByteArray[file];
-          If[FailureQ[ba], Throw[ba]];
-          blobResp = iCreateBlob[token, owner, repo, ba];
-          If[FailureQ[blobResp], Throw[blobResp]];
-          blobSHA = Lookup[blobResp["Body"], "sha", Missing["NotAvailable"]];
-          If[!StringQ[blobSHA] || blobSHA === "",
-            Throw[iFailure["MissingBlobSHA", "blob SHA を取得できませんでした。", <|"File" -> file|>]]
+    (* リモートツリーを取得して path→SHA マップを構築 (変更なしファイルのスキップ + DeleteMissing に使用) *)
+    remoteTree = iGetTreeRecursive[token, owner, repo, baseTreeSHA];
+    Module[{remoteSHAMap = <||>, remoteEntries, skipped = 0, uploaded = 0},
+      If[!FailureQ[remoteTree],
+        remoteEntries = Lookup[remoteTree["Body"], "tree", {}];
+        remoteSHAMap = Association[
+          Cases[remoteEntries,
+            a_Association /; Lookup[a, "type", None] === "blob" :>
+              (Lookup[a, "path", ""] -> Lookup[a, "sha", ""])
+          ]
+        ]
+      ];
+      Print["[GitHubCommit] ローカル: " <> ToString[Length[localFiles]] <>
+        " ファイル, リモート: " <> ToString[Length[remoteSHAMap]] <> " blob"];
+      (* Catch/Throw で blob 作成エラーを確実に伝播 *)
+      Module[{blobError, nFiles = Length[localFiles], file, localSHA, remoteSHA},
+        blobError = Catch[
+          Do[
+            file = localFiles[[k]];
+            relPath = iRelativeGitPath[localDir, file];
+            ba = iReadLocalByteArray[file];
+            If[FailureQ[ba], Throw[ba]];
+            (* ローカルで git blob SHA を計算し、リモートと比較 *)
+            localSHA = iGitBlobSHA[ba];
+            remoteSHA = Lookup[remoteSHAMap, relPath, None];
+            If[StringQ[remoteSHA] && localSHA === remoteSHA,
+              (* 変更なし — blob 作成をスキップしリモート SHA を再利用 *)
+              AppendTo[entries, <|"path" -> relPath, "mode" -> "100644",
+                "type" -> "blob", "sha" -> remoteSHA|>];
+              skipped++;,
+              (* 変更あり or 新規 — blob を作成 *)
+              Print["[Blob " <> ToString[uploaded + 1] <> "] " <> relPath <>
+                If[remoteSHA === None, " (new)", " (changed)"]];
+              blobResp = iCreateBlob[token, owner, repo, ba];
+              If[FailureQ[blobResp], Throw[blobResp]];
+              blobSHA = Lookup[blobResp["Body"], "sha", Missing["NotAvailable"]];
+              If[!StringQ[blobSHA] || blobSHA === "",
+                Throw[iFailure["MissingBlobSHA",
+                  "blob SHA を取得できませんでした。", <|"File" -> file|>]]
+              ];
+              AppendTo[entries, <|"path" -> relPath, "mode" -> "100644",
+                "type" -> "blob", "sha" -> blobSHA|>];
+              uploaded++;
+            ],
+            {k, nFiles}
           ];
-          AppendTo[entries, <|"path" -> relPath, "mode" -> "100644", "type" -> "blob", "sha" -> blobSHA|>],
-          {file, localFiles}
+          None
         ];
-        None  (* 正常終了 *)
+        If[blobError =!= None, Return[blobError]]
       ];
-      If[blobError =!= None, Return[blobError]]
-    ];
-    localPaths = Lookup[entries, "path"];
-    If[TrueQ[OptionValue[DeleteMissing]],
-      remoteTree = iGetTreeRecursive[token, owner, repo, baseTreeSHA];
-      If[FailureQ[remoteTree], Return[remoteTree]];
-      remotePaths = Cases[
-        Lookup[remoteTree["Body"], "tree", {}],
-        a_Association /; Lookup[a, "type", None] === "blob" :> Lookup[a, "path", None]
-      ];
-      deletePaths = Complement[Select[remotePaths, StringQ], localPaths];
-      entries = Join[
-        entries,
-        (<|"path" -> #, "mode" -> "100644", "type" -> "blob", "sha" -> Null|> & /@ deletePaths)
-      ];
+      Print["[GitHubCommit] アップロード: " <> ToString[uploaded] <>
+        ", スキップ (変更なし): " <> ToString[skipped]];
+      (* DeleteMissing: リモートにあってローカルにないファイルを削除マーク *)
+      If[TrueQ[OptionValue[DeleteMissing]],
+        localPaths = Lookup[entries, "path"];
+        remotePaths = Select[Keys[remoteSHAMap], StringQ];
+        deletePaths = Complement[remotePaths, localPaths];
+        entries = Join[entries,
+          (<|"path" -> #, "mode" -> "100644", "type" -> "blob", "sha" -> Null|> & /@ deletePaths)
+        ]
+      ]
     ];
     (* entries が空なら blob 作成で問題が起きた可能性がある *)
     If[Length[entries] === 0,
