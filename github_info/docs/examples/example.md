@@ -282,6 +282,21 @@ GitHubReadFile["mypackage", "image.png", ReturnType -> "ByteArray"]
 
 `ReturnType` は `"Text"`（既定）、`"ByteArray"`、`"Bytes"` から指定できます。
 
+### 10-2. ローカルファイルを UTF-8 で読み取る
+
+```mathematica
+GitHubReadLocalFile["mypackage", "mypackage.wl"]
+```
+
+**出力例:** ローカルの `mypackage.wl` の内容が UTF-8 でデコードされた文字列で返ります。
+
+```mathematica
+(* path を省略するとパッケージの .wl ファイルを読む *)
+GitHubReadLocalFile["mypackage"]
+```
+
+`ReadString` と異なり `$CharacterEncoding` に依存せず常に UTF-8 でデコードするため、日本語 Windows 環境でも文字化けしません。`GitHubReadFile` で取得したリモート内容との差分確認に利用できます。
+
 ---
 
 ## 11. ローカル作業フォルダとマニフェストの管理
@@ -316,9 +331,11 @@ GitHubReadManifest["mypackage"]
 GitHubRefreshLocalPackageGroup["mypackage"]
 ```
 
-**出力例:** `<|"Package" -> "mypackage", "CopiedFiles" -> {"mypackage.wl"}, "CopiedDirectoryFiles" -> {...}, "READMESynced" -> "/path/to/README.md", ...|>`
+**出力例:** `<|"Package" -> "mypackage", "CopiedFiles" -> {"mypackage.wl"}, "CopiedDirectoryFiles" -> {...}, "DeletedFiles" -> {}, "DeletedDirFiles" -> {}, "READMESynced" -> "/path/to/README.md", ...|>`
 
 `upload_manifest.json` に基づいて対象ファイル群をローカル GitHub 作業フォルダへコピーします。`_info/docs/README.md` が存在すればトップレベル `README.md` として配置します。`_info/originals/` のファイルはリポジトリ内の元の位置に自動的に書き戻されます。
+
+ソース側で削除されたファイルはローカル作業フォルダからも自動的に削除されます。削除されたファイルのパスは `"DeletedFiles"`（個別ファイル）および `"DeletedDirFiles"`（ディレクトリ配下のファイル）として返り値に含まれます。
 
 ### 11-4. 単一ファイルのコピー（後方互換）
 
@@ -327,6 +344,29 @@ GitHubRefreshLocalPackage["mypackage"]
 ```
 
 単一の `.wl` ファイルをローカル作業フォルダへコピーします。グループアップロードには `GitHubRefreshLocalPackageGroup` を使用してください。
+
+### 11-5. マニフェストの検証
+
+```mathematica
+GitHubValidateManifest["mypackage"]
+```
+
+**出力例:** `<|"Status" -> "OK", "FileCount" -> 5, "MissingFiles" -> {}, "ExcludePatterns" -> {"mypackage_info/history/"}, "Directories" -> {"mypackage_info"}, "Issues" -> {}|>`
+
+`upload_manifest.json` を検査し、以下の項目を確認します。
+
+- `files[]` に列挙されたファイルがローカルに実在するか
+- `secret`・`token`・`credential`・`.pid`・`.log` 等の名前を含むファイルが混入していないか
+- 除外パターンの設定内容
+
+`Issues` フィールドには検出された問題が列挙されます。
+
+| Issue タグ | 内容 |
+|---|---|
+| `"MissingFiles"` | manifest に記載されているがローカルに存在しないファイルが見つかった場合。`"Files"` キーに対象パスが含まれます。 |
+| `"SuspectSecretFiles"` | secret・token 等の名前を持つ疑わしいファイルが検出された場合。`"Files"` キーに対象パスが含まれます。 |
+
+配布前の「成果が抜けていないか」「秘密が混入していないか」の確認に使用します。
 
 ---
 
@@ -343,6 +383,8 @@ GitHubCommit["mypackage", "fix: バグ修正",
 ローカル作業フォルダの内容を GitHub の指定ブランチへコミットします。`DeleteMissing -> True` を指定すると、ローカルに存在しないリモートファイルを削除対象として tree に含めます。`Force -> True` で ref 更新時の fast-forward 制約を無視できます。
 
 通常は `GitHubRefreshAndCommit` や `GitHubSubmitPullRequest` の利用を推奨します。
+
+**422 競合の自動リトライ:** 並列実行等で head SHA がずれた場合（HTTP 422 エラー）、head SHA を再取得して最大 3 回まで自動的にリトライします。リトライ上限に達した場合は `"並列実行を避けるか、時間をおいて再試行してください。"` というメッセージを含む `Failure` が返ります。
 
 ### 12-1. エラーハンドリング
 

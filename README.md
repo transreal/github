@@ -1,3 +1,5 @@
+---
+
 # github — 設計思想と実装の概要
 
 GitHub REST API を Wolfram Language から操作するヘルパーパッケージ（コンテキスト: `GitHubREST``）
@@ -144,26 +146,30 @@ GitHubPackageURLs[]
 GitHubCreateRepository["mypackage", Public -> False, Description -> "My WL package"]
 (* -> <|"DefaultBranch" -> "main", ...|> *)
 
-(* 4. ファイルを修正した後、リフレッシュ → コミットを一括実行 *)
+(* 4. コミット前にマニフェストを検証（ファイル欠損・機密情報混入チェック） *)
+GitHubValidateManifest["mypackage"]
+(* -> <|"Status" -> "OK", "FileCount" -> 3, "MissingFiles" -> {}, "Issues" -> {}|> *)
+
+(* 5. ファイルを修正した後、リフレッシュ → コミットを一括実行 *)
 GitHubRefreshAndCommit["mypackage", "fix: バグ修正"]
 (* -> <|"CommitSHA" -> "a1b2c3...", "Branch" -> "main", ...|> *)
 
-(* 5. プルリクエストを作成する場合 *)
+(* 6. プルリクエストを作成する場合 *)
 GitHubSubmitPullRequest["mypackage",
   "feat: 新機能追加",
   "詳細な変更内容をここに記述する。"]
 (* -> <|"PullRequest" -> <|"Number" -> 1, "URL" -> "https://github.com/.../pull/1"|>, ...|> *)
 
-(* 6. オープン PR を一覧表示（ボタン付き Grid） *)
+(* 7. オープン PR を一覧表示（ボタン付き Grid） *)
 GitHubPullRequestDataset["mypackage"]
 
-(* 7. コミット履歴を表示（ボタン付き Grid） *)
+(* 8. コミット履歴を表示（ボタン付き Grid） *)
 GitHubCommitDataset["mypackage"]
 
-(* 8. 自分のパッケージをダウンロード *)
+(* 9. 自分のパッケージをダウンロード *)
 GitHubInstallPackage["fact", Owner -> "transreal"]
 
-(* 9. 他人のリポジトリを URL 指定でインストール *)
+(* 10. 他人のリポジトリを URL 指定でインストール *)
 GitHubInstallPackage["pkg", "https://github.com/alice/repo"]
 (* -> owner と repository が repo_database.json に自動登録される *)
 ```
@@ -195,7 +201,8 @@ GitHubInstallPackage["pkg", "https://github.com/alice/repo"]
 #### マニフェスト / ローカル同期
 
 - **`GitHubReadManifest[name]`** — `packageName_info/upload_manifest.json` を読む（不在時は自動生成）。パッケージ種別変更時は自動更新。`<<パッケージ名>>_*.wl` 形式の補助ファイルを `$packageDirectory` から自動検出してマニフェストに追加する
-- **`GitHubRefreshLocalPackageGroup[name]`** — マニフェストに従いファイルをローカル作業フォルダへコピー。`_info/originals/` の内容を元のリポジトリパスへ書き戻す処理（`iRestoreOriginalsToRepo`）も実行する
+- **`GitHubValidateManifest[name]`** — `upload_manifest.json` を検査し、ファイルの実在確認・機密情報らしきファイルの混入チェック・除外パターンの確認を行う。コミット・配布前の健全性チェックとして使用する
+- **`GitHubRefreshLocalPackageGroup[name]`** — マニフェストに従いファイルをローカル作業フォルダへコピー。`_info/originals/` の内容を元のリポジトリパスへ書き戻す処理（`iRestoreOriginalsToRepo`）も実行する。ソース側で削除されたファイルはローカルリポジトリからも自動クリーンアップされる
 - **`GitHubRefreshLocalPackage[name]`** — `.wl` 単体をローカルへコピー（後方互換用）
 
 #### 複数ファイルパッケージの自動収集
@@ -213,6 +220,7 @@ $packageDirectory/
 
 - **`GitHubCreateRepository[name]`** — GitHub に新規リポジトリを作成し、ファイルを初回コミット。`ExtraDirectories` でマニフェストにディレクトリを追加可能
 - **`GitHubReadFile[name, path]`** — GitHub 上のファイルを読み取る
+- **`GitHubReadLocalFile[name]` / `GitHubReadLocalFile[name, path]`** — ローカルファイルを `$CharacterEncoding` に依存せず常に UTF-8 でデコードして返す。`path` 省略時はパッケージの `.wl` ファイルを読む。`GitHubReadFile` との内容比較や日本語環境での文字化け回避に使用する
 - **`GitHubPull[name]`** — リモートの内容をローカル作業フォルダへ取得
 - **`GitHubCommit[name, message]`** — ローカル作業フォルダの内容を GitHub へ一括コミット。blob 作成時のエラーは `Catch`/`Throw` パターンで確実に伝播され、エントリ空・SHA 欠落・空文字列も検出する。削除エントリの `"sha"` フィールドには `Null`（JSON `null`）を指定し、`None` は使用しない
 - **`GitHubRefreshAndCommit[name, message]`** — リフレッシュ → コミットを一括実行。`<<パッケージ名>>_*.wl` 形式の補助ファイルも自動的に含まれる。`ExtraDirectories` でマニフェストにディレクトリを追加可能
@@ -276,6 +284,20 @@ GitHubCreateRepository["mypackage",
   ExtraDirectories -> {"Claude Directives"}]
 ```
 
+### コミット前のマニフェスト検証
+
+```wolfram
+(* ファイルの欠損・機密情報の混入を事前にチェック *)
+GitHubValidateManifest["mypackage"]
+(* -> <|"Status" -> "OK", "FileCount" -> 3, "MissingFiles" -> {}, "Issues" -> {}|> *)
+
+(* 問題が検出された場合 *)
+GitHubValidateManifest["mypackage"]
+(* -> <|"Status" -> "Issues",
+       "MissingFiles" -> {"mypackage_helpers.wl"},
+       "Issues" -> {<|"Issue" -> "MissingFiles", "Files" -> {"mypackage_helpers.wl"}|>}|> *)
+```
+
 ### 複数ファイルで構成されるパッケージのコミット
 
 ```wolfram
@@ -321,6 +343,15 @@ GitHubCommitDataset["mypackage", MaxItems -> 50]
 
 (* 特定コミットの詳細をレビュー *)
 GitHubReviewCommit["mypackage", "a1b2c3d4e5f6..."]
+```
+
+### ローカルファイルの UTF-8 読み取りとリモートとの比較
+
+```wolfram
+(* $CharacterEncoding に依存せず常に UTF-8 で読み取る *)
+local  = GitHubReadLocalFile["mypackage", "mypackage.wl"];
+remote = GitHubReadFile["mypackage", "mypackage.wl"];
+local === remote
 ```
 
 ### 日本語パッケージ名の自動対応

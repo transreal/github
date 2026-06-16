@@ -111,11 +111,58 @@ GitHubReadManifest["mypackage"]
 
 ---
 
+### `GitHubValidateManifest`
+`upload_manifest.json` を検査し、配布前の健全性チェックを行います。ファイルの実在確認、機密情報らしきファイルの混入チェック、除外パターンの確認をまとめて実施します。
+
+```mathematica
+GitHubValidateManifest["mypackage"]
+(* -> <|"Status" -> "OK",
+       "FileCount" -> 3,
+       "MissingFiles" -> {},
+       "ExcludePatterns" -> {...},
+       "Directories" -> {...},
+       "Issues" -> {}|> *)
+```
+
+**チェック内容:**
+
+| チェック項目 | 説明 |
+|---|---|
+| `MissingFiles` | マニフェストに記載されているがディスク上に存在しないファイル |
+| `SuspectSecretFiles` | `"secret"`, `"token"`, `"credential"`, `".pid"`, `".heartbeat"`, `".log"` といった文字列をファイル名に含む疑わしいファイル |
+
+**`Issues` の構造:**
+
+問題が検出された場合、`Issues` フィールドに `<|"Issue" -> "MissingFiles", "Files" -> {...}|>` や `<|"Issue" -> "SuspectSecretFiles", "Files" -> {...}|>` の形式で記録されます。問題がなければ `Issues -> {}` となります。
+
+**用途:** リポジトリへのコミット・配布前に「成果ファイルが抜けていないか」「機密情報が混入していないか」を素早く確認するためのチェックツールです。
+
+```mathematica
+(* SourceVault パッケージの例 *)
+GitHubValidateManifest["SourceVault"]
+(* -> <|"Status" -> "OK", "FileCount" -> 5, "MissingFiles" -> {}, "Issues" -> {}|> *)
+
+(* 問題がある場合 *)
+GitHubValidateManifest["mypackage"]
+(* -> <|"Status" -> "Issues",
+       "FileCount" -> 3,
+       "MissingFiles" -> {"mypackage_helpers.wl"},
+       "Issues" -> {<|"Issue" -> "MissingFiles", "Files" -> {"mypackage_helpers.wl"}|>}|> *)
+```
+
+---
+
 ### `GitHubRefreshLocalPackageGroup`
 `upload_manifest.json` に基づき対象ファイル群をローカル作業フォルダへコピーします。`_info/docs/README.md` が存在すればトップレベル `README.md` として配置します。また `_info/originals/` に保存されているファイルをリポジトリフォルダへ書き戻します。
 
+**ソース削除ファイルの自動クリーンアップ:** ソース側（`$packageDirectory`）で削除されたファイルは、ローカルリポジトリの各マニフェストディレクトリからも自動的に削除されます。コピー対象にも除外パターン対象にも該当しないファイルが削除対象となります。
+
 ```mathematica
 GitHubRefreshLocalPackageGroup["mypackage"]
+(* -> <|"CopiedFiles" -> {...},
+       "DeletedFiles" -> {...},     (* ソース削除によりローカルからも除去されたファイル *)
+       "DeletedDirFiles" -> {...},  (* ディレクトリ内でクリーンアップされたファイル *)
+       ...|> *)
 ```
 
 ---
@@ -165,7 +212,7 @@ GitHubReadFile["mypackage", "data.bin", ReturnType -> "ByteArray"]
 ### `GitHubReadLocalFile`
 ローカルファイルを UTF-8 で読み取ります。
 
-`ReadString` は `$CharacterEncoding` に依存しますが、この関数は常に UTF-8 でデコードするため、日本語環境（`$CharacterEncoding = "UTF-8"` 以外の場合）でも文字化けしません。`path` を省略するとパッケージの `.wl` ファイルを読み取ります。
+`ReadString` は `$CharacterEncoding` に依存しますが、この関数は常に UTF-8 でデコードするため、日本語環境（`$CharacterEncoding = "UTF-8"` 以外の場合）でも文字化けしません。`path` を省略するとパッケージの `.wl` ファイルを読み取ります。`GitHubReadFile` との比較用途にも使用できます。
 
 ```mathematica
 GitHubReadLocalFile["mypackage", "README.md"]
@@ -208,6 +255,8 @@ GitHubCommit["mypackage", "feat: new feature", Branch -> "dev", CreateBranch -> 
 | `"EmptyEntries"` | コミット対象のエントリが空（blob 作成の問題の可能性） |
 | `"MissingNewTreeSHA"` | 新しい tree SHA を取得できなかった |
 | `"NoLocalFiles"` | ローカル作業フォルダにファイルがない |
+
+**422 競合リトライ:** 並列実行などで head SHA がずれた場合（HTTP 422 エラー）、head SHA を再取得して自動リトライします。リトライ回数は最大 3 回（既定値）です。3 回すべて失敗した場合は「並列実行を避けるか、時間をおいて再試行してください。」というメッセージを含む Failure を返します。
 
 **削除エントリの `"sha"` フィールド:** `DeleteMissing -> True` を使用する場合、削除対象ファイルの tree エントリの `"sha"` フィールドには `Null`（JSON `null` に対応）を指定します。`None` は JSON シリアライズできないため使用しないでください。
 
@@ -499,7 +548,7 @@ GitHubRefreshAndCommit["mypackage", "feat: split into modules"]
 **注意事項:**
 - 補助ファイルの命名は必ず `<<パッケージ名>>_` で始める必要があります（例: `mypackage_helpers.wl`）。
 - 命名規則に従わないファイルは自動収集されません。手動で `upload_manifest.json` の `"files"` リストに追加するか、`ExtraDirectories` オプションを使用してください。
-- 422 競合エラーが発生した場合（同時編集など）、内部で自動リトライが行われます。解決できない場合は「並列実行を避けるか、時間をおいて再試行してください」というメッセージが返されます。
+- 422 競合エラーが発生した場合（並列実行による head SHA のずれなど）、内部で自動リトライが最大 3 回行われます。3 回すべて失敗した場合は「並列実行を避けるか、時間をおいて再試行してください」というメッセージが返されます。
 
 ---
 

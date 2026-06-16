@@ -34,6 +34,12 @@ GitHubRefreshLocalPackageGroup::usage =
   "対象ファイル・ディレクトリをローカル GitHub 作業フォルダへコピーする。\n" <>
   "_info/docs/README.md が存在すればトップレベル README.md として配置する。";
 
+GitHubValidateManifest::usage =
+  "GitHubValidateManifest[packageName] は upload_manifest.json を検査し\n" <>
+  "<|Status, FileCount, MissingFiles, ExcludePatterns, Issues, ...|> を返す。\n" <>
+  "files[] の実在、secret/token/runtime らしきファイルの混入、除外パターンを確認する。\n" <>
+  "(SourceVault では GitHubValidateManifest[\"SourceVault\"] で呼ぶ)";
+
 GitHubRefreshLocalPackage::usage =
   "GitHubRefreshLocalPackage[packageName] は $packageDirectory/packageName.wl を\n" <>
   "ローカル GitHub 作業フォルダへコピーする。(後方互換・単一ファイル用)\n" <>
@@ -1261,6 +1267,36 @@ GitHubRefreshLocalPackage[packageName_String, opts : OptionsPattern[]] :=
    ============================================================ *)
 
 GitHubReadManifest[packageName_String] := iEnsureManifest[packageName];
+
+(* manifest 検査: files[] の実在 / secret 混入 / 除外パターンを確認する。
+   配布前の「成果が抜けていないか」「秘密が混入していないか」チェックに使う。 *)
+GitHubValidateManifest[packageName_String] := Module[
+  {manifest, base, files, dirs, excl, missingFiles, presentFiles, secretHits, issues = {}},
+  base = iPackageDirectory[];
+  manifest = Quiet @ Check[iEnsureManifest[packageName], $Failed];
+  If[! AssociationQ[manifest],
+    Return[<|"Status" -> "Error", "Reason" -> "ManifestUnreadable", "PackageName" -> packageName|>]];
+  files = Lookup[manifest, "files", {}];
+  dirs  = Lookup[manifest, "directories", {}];
+  excl  = iMergedExcludePatterns[packageName];
+  missingFiles = Select[files, ! FileExistsQ[FileNameJoin[{base, #}]] &];
+  presentFiles = Complement[files, missingFiles];
+  If[missingFiles =!= {},
+    AppendTo[issues, <|"Issue" -> "MissingFiles", "Files" -> missingFiles|>]];
+  secretHits = Select[files,
+    Function[f, AnyTrue[{"secret", "token", "credential", ".pid", ".heartbeat", ".log"},
+      StringContainsQ[ToLowerCase[f], #] &]]];
+  If[secretHits =!= {},
+    AppendTo[issues, <|"Issue" -> "SuspectSecretFiles", "Files" -> secretHits|>]];
+  <|
+    "Status" -> If[issues === {}, "OK", "Issues"],
+    "PackageName" -> packageName,
+    "FileCount" -> Length[files],
+    "PresentFileCount" -> Length[presentFiles],
+    "MissingFiles" -> missingFiles,
+    "Directories" -> dirs,
+    "ExcludePatterns" -> excl,
+    "Issues" -> issues|>];
 
 Options[GitHubRefreshLocalPackageGroup] = {
   LocalRepoPath -> Automatic

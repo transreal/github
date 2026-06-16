@@ -1,3 +1,5 @@
+---
+
 # GitHub パッケージ セットアップガイド
 
 このドキュメントでは、GitHubREST` パッケージの初期設定手順について説明します。
@@ -88,5 +90,34 @@ $packageDirectory/
 1. **既存パッケージのリポジトリ作成**: `GitHubCreateRepository["packageName"]`
 2. **プルリクエスト一覧の確認**: `GitHubPullRequestDataset["packageName"]`
 3. **コミット履歴の確認**: `GitHubCommitDataset["packageName"]`
+4. **配布前のマニフェスト検証**: `GitHubValidateManifest["packageName"]`
+5. **ローカルファイルの UTF-8 読み取り**: `GitHubReadLocalFile["packageName", "path"]`
 
 詳細な使用方法については、各機能のヘルプドキュメントをご参照ください。
+
+## 補足: 配布前チェック
+
+`GitHubValidateManifest[packageName]` を使用すると、コミット・配布前に以下の項目を検証できます：
+
+- `upload_manifest.json` に列挙されたファイルの実在確認
+- secret / token / credential など秘密情報が混入していないかのスキャン
+- 除外パターン (`ExcludePatterns`) の確認
+
+```mathematica
+GitHubValidateManifest["myPackage"]
+(* <|"Status" -> "OK", "FileCount" -> 3, "MissingFiles" -> {}, "Issues" -> {}, ...|> *)
+```
+
+## 補足: 並列実行時の注意
+
+複数のノートブックや Kernel から同時に `GitHubCommit` / `GitHubRefreshAndCommit` を実行すると、GitHub API 側で 422 (head SHA 競合) エラーが発生する場合があります。パッケージは自動的に head SHA を再取得してリトライしますが、競合が繰り返す場合は**並列実行を避けるか、時間をおいて再試行**してください。
+
+## 補足: ローカルファイルの UTF-8 読み取り
+
+`GitHubReadLocalFile[packageName, path]` は、`$CharacterEncoding` の設定に依存しない UTF-8 固定読み取りを行います。`GitHubReadFile` との内容比較や、日本語環境での文字化け回避に使用できます。`path` を省略すると、パッケージの `.wl` ファイルを読み取ります。
+
+```mathematica
+(* ローカルとリモートの内容を比較する例 *)
+local  = GitHubReadLocalFile["myPackage", "myPackage.wl"];
+remote = GitHubReadFile["myPackage", "myPackage.wl"];
+local === remote
