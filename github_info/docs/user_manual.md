@@ -507,7 +507,154 @@ $GitHubLicenseHolder = "Katsunobu Imai"
 
 ---
 
-## 9. 他人のリポジトリを使う流れ
+## 9. パッケージ自動コミット（auto-commit ヘルパー）
+
+`GitHubRefreshAndCommit` の前段として、コミットを安全かつ半自動で進めるための高水準ヘルパー群です。旧 `PackageAutoCommit.wl` を本パッケージに統合したものです。
+
+これらの関数は次の役割を担います。
+
+- **docs 鮮度ゲート** — ドキュメント（`api.md` / `api_*.md`）がソース更新に追従しているかを確認し、古い場合はコミットを止めます。
+- **前回コミット差分** — 現ソースと前回コミットスナップショットを読み取り専用で比較します。
+- **コミットメッセージ案** — 差分から決定論的な単文、または LLM で要約したメッセージを生成します。
+- **駆動関数** — 既定では DryRun（実コミットせず計画とメッセージ案を返す）で動作し、確認後に実コミットへ進みます。
+
+典型的なワークフローは次のとおりです。
+
+```mathematica
+(* 1. まず DryRun で計画とコミットメッセージ案を確認する（既定動作） *)
+PackageCommit["github"]
+(* -> <|"Status" -> "DryRun", "Committed" -> False,
+       "CommitMessage" -> "...", "Diff" -> <|...|>, ...|> *)
+
+(* 2. 問題なければ実コミットする *)
+PackageCommit["github", "DryRun" -> False]
+(* -> <|"Status" -> "Committed", "Committed" -> True, ...|> *)
+```
+
+---
+
+### `PackageDocsFreshnessGate`
+`packageName_info/docs` 配下の `api.md` / `api_*.md` が、対応する `.wl` ファイルより後に更新されているか（鮮度）を検査します。
+
+- **対応規則:** `api.md` ↔ `<pkg>.wl`、`api_<suffix>.md` ↔ `<pkg>_<suffix>.wl`
+- api ドキュメントが対応 `.wl` より古い（= `.wl` 更新後にドキュメントが未更新）ものが 1 つでもあれば `Proceed -> False` となり、`StaleDocs` に `<|Doc, Wl, DocDate, WlDate|>` を列挙します。
+- 対応する `.wl` が存在しない api ドキュメントは検査対象外です。
+- `docs` フォルダが無ければ `Proceed -> True` です。
+
+```mathematica
+PackageDocsFreshnessGate["github"]
+(* -> <|"Status" -> "OK", "Package" -> "github", "Proceed" -> True,
+       "Checked" -> 1, "StaleDocs" -> {}, "DocsDir" -> "..."|> *)
+
+(* docs が古い場合 *)
+(* -> <|"Proceed" -> False,
+       "StaleDocs" -> {<|"Doc" -> "api.md", "Wl" -> "github_fixed.wl",
+                         "DocDate" -> ..., "WlDate" -> ...|>}, ...|> *)
+```
+
+戻り値: `<|Status, Package, Proceed, Checked, StaleDocs, DocsDir|>`
+
+---
+
+### `PackageCommitDiff`
+`packageName` の現ソースと、前回コミットスナップショット（`GithubRepositories/<pkg>`）との差分を**読み取り専用**で計算します。
+
+- `upload_manifest.json` を直接 `Import` します（`GitHubReadManifest` はマニフェストを自動編集するため呼びません）。
+- `GitHubRefreshAndCommit` の前方マッピング（`files` = basename、`directories` = 相対パス + 除外パターン）を再現して、ソース ↔ スナップショットを内容比較します。
+- **必ずリフレッシュ前に呼んでください。** リフレッシュ後はスナップショットが上書きされ、差分が消えてしまいます。
+
+```mathematica
+PackageCommitDiff["github"]
+(* -> <|"Status" -> "OK", "Package" -> "github",
+       "SnapshotDir" -> "...", "SnapshotExists" -> True,
+       "Added" -> {...}, "Changed" -> {...}, "Removed" -> {...},
+       "UnchangedCount" -> 12, "ChangeCount" -> 1,
+       "ChangedDetail" -> {<|"Rel" -> ..., "Src" -> ..., "Snap" -> ...|>, ...},
+       "Summary" -> "added 0, changed 1, removed 0"|> *)
+```
+
+戻り値: `<|Status, Package, SnapshotDir, SnapshotExists, Added, Changed, Removed, UnchangedCount, ChangeCount, ChangedDetail, Summary|>`
+
+---
+
+### `PackageCommitPlan`
+鮮度ゲート → 差分 → コミットメッセージ案 を**読み取り専用**に組み立てます（実コミットはしません）。
+
+- ゲートが `Proceed -> False`（docs が古い）なら `Status -> Blocked`。
+- 差分が無ければ `Status -> NoChange`。
+- 両方 OK なら `Status -> OK` で `CommitMessage` を返します。
+
+**オプション:**
+
+| オプション | 既定値 | 説明 |
+|---|---|---|
+| `"MessageGenerator"` | `Automatic` | `Automatic`（差分からの決定論的単文）、`"固定文字列"`、または関数（diff Association を受け取り文字列を返す）を指定 |
+| `"SkipDocsGate"` | `False` | `True` で docs 鮮度ゲートを無視して進む。OK 結果には `StaleDocs` 警告と `DocsGateSkipped` が付く |
+
+```mathematica
+PackageCommitPlan["github"]
+(* -> <|"Status" -> "OK", "Package" -> "github", "Proceed" -> True,
+       "Diff" -> <|...|>, "CommitMessage" -> "..."|> *)
+```
+
+戻り値: `<|Status, Package, Proceed, (StaleDocs | Diff | CommitMessage), ...|>`
+
+---
+
+### `PackageCommit`
+パッケージのメイン駆動関数です。`PackageCommitPlan` を実行し、`Status -> OK` のときに `GitHubRefreshAndCommit[packageName, CommitMessage]` を呼びます。`Blocked`（docs 古い）/ `NoChange` / `Failed` のときはコミットせず計画結果を返します。
+
+**オプション:**
+
+| オプション | 既定値 | 説明 |
+|---|---|---|
+| `"DryRun"` | `True` | 既定。実コミットせず計画とメッセージ案を返す。`False` で実コミット |
+| `"MessageGenerator"` | `Automatic` | `PackageCommitPlan` と同じ。`Automatic` / 固定文字列 / 関数 |
+| `"SkipDocsGate"` | `False` | `True` は DryRun プレビュー専用でゲートを無視する。実コミット（`DryRun -> False`）では `SkipDocsGate` に関わらず docs が古ければ `Blocked` で停止し `StaleDocs` を返す |
+
+```mathematica
+(* DryRun（既定）: メッセージ案を確認 *)
+PackageCommit["github"]
+
+(* docs が古いとき、確認だけしたい場合 *)
+PackageCommit["github", "SkipDocsGate" -> True]
+
+(* 実コミット *)
+PackageCommit["github", "DryRun" -> False]
+```
+
+**docs が古いまま実コミットを試みた場合:** 警告メッセージが表示され `Status -> Blocked` で停止します。ドキュメントを更新してから再実行するか、確認だけなら `"DryRun" -> True` + `"SkipDocsGate" -> True` でメッセージ案を確認してください。
+
+戻り値: `<|Status (DryRun | Committed | Blocked | NoChange | Failed), Committed, CommitMessage, ...|>`
+
+---
+
+### `PackageLLMMessageGenerator`
+LLM でコミットメッセージを生成する `MessageGenerator` 関数（diff Association → 文字列）を返します。`PackageCommit` / `PackageCommitPlan` の `"MessageGenerator"` オプションに渡して使います。
+
+- `queryFn` は `prompt -> 文字列` の関数です。
+- モデル指定子（tuple `{provider, model}` 例 `$iModelSonnet`、またはモデル名の String）を渡すと、`ClaudeCode`ClaudeQueryBg[prompt, Model -> spec]` で自動的にラップします（[claudecode](https://github.com/transreal/claudecode) が必要）。
+- 既定（`"IncludeContent" -> True`）では、変更ファイルの実際の変更行（`-` 削除 / `+` 追加、`PackageCommitDiff` の `ChangedDetail` から計算）をプロンプトに含め、何が変わったかを要約させます。**ソース変更行を model に送るため、信頼できる model を使ってください。** `"IncludeContent" -> False` でファイル名のみ（低 privacy）に戻せます。
+- `queryFn[prompt]` が文字列を返さない／空の場合は、決定論メッセージにフォールバックします。
+
+**オプション:**
+
+| オプション | 既定値 | 説明 |
+|---|---|---|
+| `"MaxChars"` | `80` | 生成メッセージの最大文字数 |
+| `"IncludeContent"` | `True` | 変更行をプロンプトに含めるか |
+| `"MaxContentChars"` | `4000` | プロンプトに含める変更内容の合計文字数上限 |
+| `"MaxPerFileChars"` | `1500` | ファイル毎の変更内容文字数上限 |
+
+```mathematica
+(* Sonnet でコミットメッセージを生成して実コミット *)
+PackageCommit["github", "DryRun" -> False,
+  "MessageGenerator" -> PackageLLMMessageGenerator[$iModelSonnet]]
+```
+
+---
+
+## 10. 他人のリポジトリを使う流れ
 
 ```mathematica
 (* 1. 初回インストール: URL を指定して owner/repo を自動登録 *)
@@ -521,7 +668,7 @@ GitHubSubmitPullRequest["pkg", "Fix", "Bug fix"]        (* PR 送信 *)
 
 ---
 
-## 10. 複数ファイルパッケージのワークフロー
+## 11. 複数ファイルパッケージのワークフロー
 
 パッケージを複数の `.wl` ファイルに分割する場合は、`<<パッケージ名>>_<<追加文字列>>.wl` という命名規則に従います。これにより、補助ファイルが自動的に検出されてリポジトリにまとめて追加されます。
 
@@ -552,13 +699,13 @@ GitHubRefreshAndCommit["mypackage", "feat: split into modules"]
 
 ---
 
-## 11. Undo 再評価防止ガード
+## 12. Undo 再評価防止ガード
 
 `GitHubReviewPullRequest`、`GitHubReviewCommit`、および各 Grid のボタン操作には Undo 再評価防止ガードが組み込まれています。ノートブックの Undo 操作により同じアクションが二重に実行されることを防ぎます。ガードは `WithCleanup` で正常終了・異常終了のいずれの場合も自動的に解除されます。
 
 ---
 
-## 12. 主要オプション一覧
+## 13. 主要オプション一覧
 
 | オプション | 既定値 | 説明 |
 |---|---|---|
@@ -590,9 +737,21 @@ GitHubRefreshAndCommit["mypackage", "feat: split into modules"]
 | `LicenseTemplate` | `None` | GitHub の license テンプレート名 |
 | `PackageFile` | `Automatic` | 元の packageName.wl のパスを明示指定 |
 
+### パッケージ自動コミット（`PackageCommit` / `PackageCommitPlan` / `PackageLLMMessageGenerator`）オプション
+
+| オプション | 既定値 | 説明 |
+|---|---|---|
+| `"DryRun"` | `True` | `PackageCommit` で実コミットせず計画とメッセージ案を返すか |
+| `"MessageGenerator"` | `Automatic` | コミットメッセージ生成方法（`Automatic` / 固定文字列 / diff を受け取る関数） |
+| `"SkipDocsGate"` | `False` | docs 鮮度ゲートを無視するか（実コミットでは無効。古い docs では Blocked で停止） |
+| `"MaxChars"` | `80` | `PackageLLMMessageGenerator` の生成メッセージ最大文字数 |
+| `"IncludeContent"` | `True` | `PackageLLMMessageGenerator` で変更行をプロンプトに含めるか |
+| `"MaxContentChars"` | `4000` | プロンプトに含める変更内容の合計文字数上限 |
+| `"MaxPerFileChars"` | `1500` | ファイル毎の変更内容文字数上限 |
+
 ---
 
 ## 関連パッケージ
 
 - [NBAccess](https://github.com/transreal/NBAccess) — API キー管理・ノートブック操作
-- [claudecode](https://github.com/transreal/claudecode) — Claude AI との連携（日本語パッケージ名の英語リポジトリ名自動生成にも使用）
+- [claudecode](https://github.com/transreal/claudecode) — Claude AI との連携（日本語パッケージ名の英語リポジトリ名自動生成、`PackageLLMMessageGenerator` の LLM 呼び出しにも使用）

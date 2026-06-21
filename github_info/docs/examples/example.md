@@ -442,3 +442,110 @@ GitHubCreateRepository["mypackage", Fallback -> True]
 ```
 
 `Fallback -> True` を明示的に指定しない限り、API エラー時は処理を即停止します。すべての主要関数で `Fallback` オプションが利用可能です。
+
+---
+
+## 16. パッケージ自動コミット（docs 鮮度ゲート・差分・コミットメッセージ案）
+
+`GitHubRefreshAndCommit` の前段を担うヘルパー群です。ドキュメントの鮮度チェック・前回コミットとの差分計算・コミットメッセージ案の生成（決定論または LLM）を行い、安全にコミットを駆動します。すべて既定では ReadOnly（差分・計画のみ）で動作します。
+
+### 16-1. ドキュメント鮮度ゲートの検査
+
+```mathematica
+PackageDocsFreshnessGate["github"]
+```
+
+**出力例:** `<|"Status" -> "OK", "Package" -> "github", "Proceed" -> True, "Checked" -> 1, "StaleDocs" -> {}, "DocsDir" -> "/path/to/github_info/docs"|>`
+
+`packageName_info/docs` 配下の `api.md` / `api_*.md` が対応する `.wl` ファイル以降に更新されているか（鮮度）を検査します。対応規則は `api.md` ↔ `<pkg>.wl`、`api_<suffix>.md` ↔ `<pkg>_<suffix>.wl` です。
+
+api ドキュメントが対応 `.wl` より古い（= `.wl` 更新後にドキュメントが未更新）ものが 1 つでもあれば `"Proceed" -> False` となり、`"StaleDocs"` に `<|Doc, Wl, DocDate, WlDate|>` が列挙されます。
+
+```mathematica
+(* 古いドキュメントがある場合 *)
+PackageDocsFreshnessGate["github"]
+(* <|"Status" -> "OK", "Proceed" -> False,
+     "StaleDocs" -> {<|"Doc" -> "api.md", "Wl" -> "github.wl",
+        "DocDate" -> DateObject[...], "WlDate" -> DateObject[...]|>}, ...|> *)
+```
+
+対応する `.wl` が存在しない api ドキュメントは検査対象外です。docs フォルダが無ければ `"Proceed" -> True` になります。
+
+### 16-2. 前回コミットとの差分計算
+
+```mathematica
+PackageCommitDiff["github"]
+```
+
+**出力例:** `<|"Status" -> "OK", "Package" -> "github", "SnapshotDir" -> "/path/to/GithubRepositories/github", "SnapshotExists" -> True, "Added" -> {}, "Changed" -> {"github.wl"}, "Removed" -> {}, "UnchangedCount" -> 4, "ChangeCount" -> 1, "ChangedDetail" -> {...}, "Summary" -> "added 0, changed 1, removed 0"|>`
+
+現ソースと前回コミットスナップショット（`GithubRepositories/<pkg>`）との差分を ReadOnly に計算します。`upload_manifest.json` を直接 Import し、`GitHubRefreshAndCommit` の前方マッピング（`files` = ベース名、`directories` = 相対パス + 除外パターン）を再現してソースとスナップショットを内容比較します。
+
+**注意:** リフレッシュ前に呼んでください。リフレッシュ後はスナップショットが上書きされ差分が消えます。
+
+### 16-3. コミット計画の組み立て
+
+```mathematica
+PackageCommitPlan["github"]
+```
+
+**出力例:** `<|"Status" -> "OK", "Package" -> "github", "Proceed" -> True, "Diff" -> <|...|>, "CommitMessage" -> "github.wl のコミット差分計算ヘルパーを追加", ...|>`
+
+鮮度ゲート → 差分 → コミットメッセージ案 を ReadOnly に組み立てます。
+
+- ゲートが `"Proceed" -> False`（docs が古い）なら `"Status" -> "Blocked"`
+- 差分が無ければ `"Status" -> "NoChange"`
+- 両方 OK なら `"Status" -> "OK"` で `"CommitMessage"` を返します（実コミットはしません）
+
+```mathematica
+(* メッセージ生成器を固定文字列にする *)
+PackageCommitPlan["github", "MessageGenerator" -> "fix: 手動メッセージ"]
+
+(* 鮮度ゲートを無視して計画だけ確認する *)
+PackageCommitPlan["github", "SkipDocsGate" -> True]
+```
+
+`"MessageGenerator"` には `Automatic`（差分からの決定論的単文）、固定文字列、または差分 Association を受け取り文字列を返す関数を指定できます。`"SkipDocsGate" -> True` は docs 鮮度ゲートを無視して進み、OK 結果に `StaleDocs` 警告と `"DocsGateSkipped"` を付加します。
+
+### 16-4. 計画の実行（メイン駆動関数）
+
+```mathematica
+(* 既定は DryRun: 実コミットせず計画とメッセージ案を返す *)
+PackageCommit["github"]
+```
+
+**出力例:** `<|"Status" -> "DryRun", "Committed" -> False, "CommitMessage" -> "github.wl のコミット差分計算ヘルパーを追加", ...|>`
+
+```mathematica
+(* 実際にコミットする *)
+PackageCommit["github", "DryRun" -> False]
+```
+
+**出力例:** `<|"Status" -> "Committed", "Committed" -> True, "CommitMessage" -> "...", ...|>`
+
+`PackageCommitPlan` を実行し、`"Status" -> "OK"` のときに `GitHubRefreshAndCommit[packageName, CommitMessage]` を呼びます。`Blocked`（docs が古い）・`NoChange`・`Failed` のときはコミットせず計画結果を返します。
+
+`"Status"` の取り得る値は `DryRun` / `Committed` / `Blocked` / `NoChange` / `Failed` です。実コミット（`"DryRun" -> False`）では `"SkipDocsGate"` の指定に関わらず docs が古ければ `Blocked` で停止し `StaleDocs` を返します（`"SkipDocsGate" -> True` は DryRun プレビュー専用）。
+
+### 16-5. LLM によるコミットメッセージ生成
+
+```mathematica
+(* claudecode の Sonnet モデルでメッセージを生成する *)
+PackageCommit["github", "DryRun" -> False,
+  "MessageGenerator" -> PackageLLMMessageGenerator[$iModelSonnet]]
+```
+
+`PackageLLMMessageGenerator[queryFn]` は LLM でコミットメッセージを生成する `MessageGenerator` 関数（差分 Association → 文字列）を返します。`queryFn` は `prompt -> 文字列` の関数です。モデル指定子（タプル `{provider, model}` 例 `$iModelSonnet`、またはモデル名 String）を渡すと `ClaudeCode`ClaudeQueryBg[prompt, Model -> spec]` で自動的にラップされます（claudecode が必要）。
+
+既定（`"IncludeContent" -> True`）では、変更ファイルの実際の変更行（`-` 削除 / `+` 追加、`PackageCommitDiff` の `ChangedDetail` から計算）をプロンプトに含め、何が変わったかを要約させます。ソース変更行をモデルに送るため、信頼できるモデルを使ってください。`"IncludeContent" -> False` でファイル名のみ（低 privacy）に戻せます。
+
+`queryFn[prompt]` が文字列を返さない、または空の場合は決定論メッセージにフォールバックします。
+
+| オプション | 既定値 | 内容 |
+|---|---|---|
+| `"MaxChars"` | `80` | 生成メッセージの最大文字数 |
+| `"IncludeContent"` | `True` | プロンプトに変更行を含めるか |
+| `"MaxContentChars"` | `4000` | 変更行全体の最大文字数 |
+| `"MaxPerFileChars"` | `1500` | 1 ファイルあたりの変更行の最大文字数 |
+
+生成されるコミットメッセージは決定論的な簡潔単文（体言止め）で、配布前のレビューに利用できます。

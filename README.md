@@ -1,5 +1,3 @@
----
-
 # github — 設計思想と実装の概要
 
 GitHub REST API を Wolfram Language から操作するヘルパーパッケージ（コンテキスト: `GitHubREST``）
@@ -24,13 +22,17 @@ APIキーをコード中に直書きしない安全設計を採用していま�
 
 GitHub Contents API の単純なファイル更新ではなく、Git の低レベル API（blob 作成 → tree 作成 → commit 作成 → ref 更新）を使っています。これにより複数ファイルを**一つのコミットにまとめて**反映でき、履歴が汚れません。blob 作成処理では `Catch`/`Throw` パターンを採用し、ファイル読み込みエラー・API エラー・SHA 取得失敗（空文字列を含む）のいずれも即座に検出・伝播します。エントリが空の場合は `"EmptyEntries"` エラーとして報告され、tree SHA の検証でも空文字列を不正値として扱うため、問題の原因を正確に特定できます。`DeleteMissing -> True` による削除エントリの tree `"sha"` フィールドには、JSON シリアライズ不能な `None` ではなく、JSON `null` に対応する `Null` を指定します。Windows 環境での UTF-8 エンコード問題は `iEncodeJSONBody` / `iForceASCIIJSON` で内部的に回避しており、日本語ファイル名・コミットメッセージも正しく送信できます。
 
+## 差分ベースの自動コミット（ドキュメント鮮度ゲート付き）
+
+旧 `PackageAutoCommit.wl` の機能を **`github.wl` に統合**し、任意のローカルパッケージを安全に GitHub へオートコミットする支援関数群を提供します。中核となる `PackageCommit` は、(1) **ドキュメント鮮度ゲート**（`PackageDocsFreshnessGate`）で `_info/docs/` の `api.md` / `api_*.md` が対応する `.wl` 以降に更新されているかを検査し、(2) 前回コミットのスナップショットと現ソースを内容比較する**差分計算**（`PackageCommitDiff`）を行い、(3) 差分から**コミットメッセージ案**を生成してから、ゲート通過かつ差分ありのときだけ `GitHubRefreshAndCommit` を実行します。`.wl` を更新したのにドキュメントが古いままの場合は `Blocked` となり実コミットを停止するため、ドキュメントとソースの乖離を防げます。既定は `"DryRun" -> True`（実コミットせず計画とメッセージ案のみ確認）で、安全側に倒した設計です。コミットメッセージは決定論的な単文生成のほか、`PackageLLMMessageGenerator` で [claudecode](https://github.com/transreal/claudecode) の LLM による content-aware 生成（実際の変更行を要約）に切り替えられます。
+
 ## 日本語パッケージ名対応
 
 GitHub リポジトリ名には ASCII 文字しか使えないため、日本語などの非 ASCII パッケージ名と英語リポジトリ名の対応を `GithubRepositories/repo_database.json` で管理する**リポジトリ名データベース**を内蔵しています。未登録の非 ASCII 名は [claudecode](https://github.com/transreal/claudecode) の Claude API を呼び出し、意味のある英語リポジトリ名を 3 候補生成し、GitHub 上の重複を確認した上で自動登録します。Claude API が利用できない場合は `Transliterate` によるフォールバックが行われます。`Fallback -> True` オプションを指定すると、API 制限時も代替モデルで継続処理されます。`Fallback -> True` が明示されていない場合はエラーを伝播して処理を停止し、不正なリポジトリ名が登録されることを防ぎます。
 
 ## ローカル作業フォルダの役割
 
-`$packageDirectory/GithubRepositories/packageName` をローカル作業フォルダとして使います。GitHub からの Pull（取得）はこのフォルダへ展開され、Commit 時はこのフォルダの内容を GitHub へ送信します。中間フォルダを挟む設計により、`$packageDirectory` 本体を直接汚染せずに安全にバージョン管理できます。
+`$packageDirectory/GithubRepositories/packageName` をローカル作業フォルダとして使います。GitHub からの Pull（取得）はこのフォルダへ展開され、Commit 時はこのフォルダの内容を GitHub へ送信します。中間フォルダを挟む設計により、`$packageDirectory` 本体を直接汚染せずに安全にバージョン管理できます。このフォルダは同時に**前回コミット時のスナップショット**としても機能し、`PackageCommitDiff` / `PackageCommit` はこのスナップショットと現ソースを内容比較して差分を求めます（そのためリフレッシュ前に呼び出す必要があります）。
 
 ## ローカルスナップショットによる安全なコミット巻き戻し
 
@@ -68,14 +70,14 @@ GitHub リポジトリ名には ASCII 文字しか使えないため、日本語
 |------|------|
 | Mathematica | 13.0 以上推奨 |
 | OS | Windows 11 想定（macOS / Linux は未検証） |
-| 依存パッケージ | [NBAccess](https://github.com/transreal/NBAccess)、[claudecode](https://github.com/transreal/claudecode)（日本語パッケージ名の自動翻訳に使用） |
+| 依存パッケージ | [NBAccess](https://github.com/transreal/NBAccess)、[claudecode](https://github.com/transreal/claudecode)（日本語パッケージ名の自動翻訳・コミットメッセージの LLM 生成に使用） |
 | 外部サービス | GitHub アカウント・Personal Access Token（スコープ: `repo`） |
 
 ### インストール
 
 #### 1. 依存パッケージの確認
 
-本パッケージは [NBAccess](https://github.com/transreal/NBAccess) に依存します。先に `NBAccess.wl` が `$packageDirectory` に配置済みであることを確認してください。日本語パッケージ名の自動英語翻訳には [claudecode](https://github.com/transreal/claudecode) も必要です。
+本パッケージは [NBAccess](https://github.com/transreal/NBAccess) に依存します。先に `NBAccess.wl` が `$packageDirectory` に配置済みであることを確認してください。日本語パッケージ名の自動英語翻訳・コミットメッセージの LLM 自動生成には [claudecode](https://github.com/transreal/claudecode) も必要です。
 
 ```wolfram
 FileExistsQ[FileNameJoin[{$packageDirectory, "NBAccess.wl"}]]
@@ -154,6 +156,10 @@ GitHubValidateManifest["mypackage"]
 GitHubRefreshAndCommit["mypackage", "fix: バグ修正"]
 (* -> <|"CommitSHA" -> "a1b2c3...", "Branch" -> "main", ...|> *)
 
+(* 5'. もしくは差分ベースの自動コミット（既定は DryRun で計画のみ確認） *)
+PackageCommit["mypackage"]
+(* -> <|"Status" -> "DryRun"/"NoChange"/"Blocked", "CommitMessage" -> ..., ...|> *)
+
 (* 6. プルリクエストを作成する場合 *)
 GitHubSubmitPullRequest["mypackage",
   "feat: 新機能追加",
@@ -188,6 +194,7 @@ GitHubInstallPackage["pkg", "https://github.com/alice/repo"]
 | `MaxItems` | `30` | `GitHubListCommits` / `GitHubCommitDataset` で取得するコミット数の上限 |
 | `ExtraDirectories` | `{}` | マニフェストに永続追加するディレクトリのリスト（例: `{"Claude Directives"}`） |
 | `Fallback` | `False` | `True` で API 制限時に代替モデルでの処理を有効化 |
+| `"DryRun"` | `True` | `PackageCommit` で実コミットせず計画とメッセージ案のみ返す |
 
 ### 主な機能
 
@@ -205,16 +212,14 @@ GitHubInstallPackage["pkg", "https://github.com/alice/repo"]
 - **`GitHubRefreshLocalPackageGroup[name]`** — マニフェストに従いファイルをローカル作業フォルダへコピー。`_info/originals/` の内容を元のリポジトリパスへ書き戻す処理（`iRestoreOriginalsToRepo`）も実行する。ソース側で削除されたファイルはローカルリポジトリからも自動クリーンアップされる
 - **`GitHubRefreshLocalPackage[name]`** — `.wl` 単体をローカルへコピー（後方互換用）
 
-#### 複数ファイルパッケージの自動収集
+#### 差分ベースの自動コミット（旧 PackageAutoCommit、github.wl に統合）
 
-`<<リポジトリ名>>_<<追加文字列>>.wl` という命名規則に従う補助ファイルは、`iDiscoverAuxWLFiles` によって自動検出されます。検出されたファイルはマニフェストの `"files"` リストに追加され、`GitHubRefreshAndCommit` / `GitHubCreateRepository` 実行時にメインファイルと一括でコミットされます。
-
-```
-$packageDirectory/
-  mypackage.wl          ← メインファイル
-  mypackage_helpers.wl  ← 補助ファイル（自動収集対象）
-  mypackage_utils.wl    ← 補助ファイル（自動収集対象）
-```
+- **`PackageDocsFreshnessGate[name]`** — `_info/docs/` の `api.md` / `api_*.md` が対応する `.wl` 以降に更新されているか検査する。古い場合は `Proceed -> False`
+- **`PackageCommitDiff[name]`** — 前回コミットスナップショットと現ソースを内容比較し、追加・変更・削除ファイルを求める（ReadOnly。リフレッシュ前に呼ぶ）
+- **`PackageCommitPlan[name]`** — ゲート → 差分 → メッセージ案を ReadOnly に組み立てる。通過かつ差分ありのときのみ `Status -> "OK"`
+- **`PackageCommit[name]`** — 計画を実行し、`Status -> "OK"` のときだけ実コミット。**既定は `"DryRun" -> True`**。ドキュメントが古い／差分なしなら安全に短絡停止する
+- **`PackageLLMMessageGenerator[queryFn]`** — 実際の変更行を要約する content-aware なコミットメッセージ生成器（`diff -> String`）を返す。モデル指定子を渡すと claudecode で自動ラップ
+- **`$PackageAutoCommitVersion`** — 自動コミット機能のバージョン
 
 #### リポジトリ操作
 
@@ -260,15 +265,17 @@ $packageDirectory/
 #### グローバル変数
 
 - **`$GitHubLicenseHolder`** — MIT ライセンスの著作権者名。空文字列 `""` の場合、ライセンスセクションは `README.md` に挿入されません。例: `$GitHubLicenseHolder = "Katsunobu Imai"`
+- **`$PackageAutoCommitVersion`** — 差分ベース自動コミット機能のバージョン
 
 ### ドキュメント一覧
 
 | ファイル | 内容 |
 |---------|------|
 | `api.md` | 全関数・オプションのリファレンス |
-| `setup.md` | セットアップガイド（要件・インストール・API キー設定・トラブルシューティング） |
+| `setup.md` | セットアップガイド（要件・インストール・API キー設定・自動コミット・トラブルシューティング） |
 | `user_manual.md` | 各関数の詳細な使い方と引数説明 |
-| `example.md` | 典型的なユースケースのコード例 |
+| `examples/example.md` | 典型的なユースケースのコード例 |
+| `examples/autocommit.md` | 差分ベース自動コミット関数群（`PackageDocsFreshnessGate` / `PackageCommitDiff` / `PackageCommitPlan` / `PackageCommit` / `PackageLLMMessageGenerator`）の実行例集 |
 
 リポジトリ: [https://github.com/transreal/github](https://github.com/transreal/github)
 
@@ -310,6 +317,26 @@ GitHubReadManifest["mypackage"]
 
 (* 全ファイルをまとめてコミット *)
 GitHubRefreshAndCommit["mypackage", "feat: add helper modules"]
+```
+
+### 差分ベースの自動コミット（ドキュメント鮮度ゲート付き）
+
+```wolfram
+(* 既定は DryRun: 実コミットせず計画とコミットメッセージ案のみ確認 *)
+PackageCommit["mypackage"]
+(* -> <|"Status" -> "DryRun", "CommitMessage" -> "...", "Diff" -> ..., ...|> *)
+
+(* 差分の内訳を確認（リフレッシュ前に呼ぶこと） *)
+PackageCommitDiff["mypackage"]
+(* -> <|"Added" -> {...}, "Changed" -> {...}, "Removed" -> {...},
+       "Summary" -> "added 2, changed 6, removed 0", ...|> *)
+
+(* ドキュメントが古ければ Blocked で停止。更新してから再実行 *)
+PackageCommit["mypackage", "DryRun" -> False]
+
+(* LLM でコミットメッセージを生成（要 claudecode ロード） *)
+PackageCommit["mypackage", "DryRun" -> False,
+  "MessageGenerator" -> PackageLLMMessageGenerator[$iModelSonnet, "MaxChars" -> 80]]
 ```
 
 ### 既存パッケージの更新とプルリクエスト

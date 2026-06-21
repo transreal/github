@@ -1,8 +1,6 @@
----
-
 # GitHub パッケージ セットアップガイド
 
-このドキュメントでは、GitHubREST` パッケージの初期設定手順について説明します。
+このドキュメントでは、`GitHubREST`` パッケージの初期設定手順について説明します。
 
 ## 前提条件
 
@@ -11,7 +9,7 @@
 GitHubパッケージは以下のパッケージに依存しています：
 
 - **[NBAccess](https://github.com/transreal/NBAccess)**: API認証とキー管理を担当します
-- **[claudecode](https://github.com/transreal/claudecode)**: Claude Code環境での動作に必要です
+- **[claudecode](https://github.com/transreal/claudecode)**: Claude Code環境での動作に必要です。コミットメッセージのLLM自動生成 (`PackageLLMMessageGenerator`) を利用する場合にも使用されます
 
 これらのパッケージが`$packageDirectory`にインストールされていることを確認してください。
 
@@ -83,6 +81,8 @@ $packageDirectory/
 
 これらのディレクトリは必要に応じて自動作成されます。
 
+なお、`GithubRepositories/[packageName]/` は GitHub へのアップロード内容であると同時に、**前回コミット時のスナップショット**としても機能します。`PackageCommitDiff` / `PackageCommit` はこのスナップショットと現ソースを内容比較して差分を求めるため、リフレッシュ前に呼び出す必要があります。
+
 ## 次のステップ
 
 セットアップが完了したら、以下の機能をお試しください：
@@ -92,6 +92,7 @@ $packageDirectory/
 3. **コミット履歴の確認**: `GitHubCommitDataset["packageName"]`
 4. **配布前のマニフェスト検証**: `GitHubValidateManifest["packageName"]`
 5. **ローカルファイルの UTF-8 読み取り**: `GitHubReadLocalFile["packageName", "path"]`
+6. **差分ベースの自動コミット**: `PackageCommit["packageName"]`（既定は DryRun。計画とコミットメッセージ案のみを返します）
 
 詳細な使用方法については、各機能のヘルプドキュメントをご参照ください。
 
@@ -107,6 +108,24 @@ $packageDirectory/
 GitHubValidateManifest["myPackage"]
 (* <|"Status" -> "OK", "FileCount" -> 3, "MissingFiles" -> {}, "Issues" -> {}, ...|> *)
 ```
+
+## 補足: ドキュメント鮮度ゲートと自動コミット
+
+`PackageCommit[packageName]` は、配布前の自動コミット駆動関数です。実行すると、以下の流れを経て安全にコミットを行います。
+
+1. **ドキュメント鮮度ゲート** (`PackageDocsFreshnessGate`): `packageName_info/docs` 配下の `api.md` / `api_*.md` が対応する `.wl` ファイル以降に更新されているかを検査します。`.wl` を更新したのにドキュメントが古いままの場合は `Blocked` となり、実コミットを停止します。
+2. **差分計算** (`PackageCommitDiff`): 前回コミットスナップショットと現ソースを内容比較し、追加・変更・削除ファイルを求めます。差分が無ければ `NoChange` となります。
+3. **コミットメッセージ案の生成**: 差分から決定論的に単文メッセージを生成します。`claudecode` を併用する場合は `PackageLLMMessageGenerator` で LLM 生成に切り替えられます。
+
+```mathematica
+(* 既定は DryRun: 実コミットせず計画とメッセージ案のみ確認 *)
+PackageCommit["myPackage"]
+
+(* 実コミット (ドキュメントが古ければ Blocked で停止) *)
+PackageCommit["myPackage", "DryRun" -> False]
+```
+
+ドキュメントが古く `Blocked` になった場合は、ドキュメントを更新してから再実行してください。メッセージ案だけを確認したい場合は `DryRun` のまま `"SkipDocsGate" -> True` を指定するとゲートを無視してプレビューできます（実コミットでは `SkipDocsGate` は無効で、必ず鮮度ゲートが適用されます）。
 
 ## 補足: 並列実行時の注意
 

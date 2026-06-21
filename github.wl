@@ -228,6 +228,62 @@ $GitHubLicenseHolder::usage =
   "\:4f8b: $GitHubLicenseHolder = \"Katsunobu Imai\"";
 
 
+(* ============================================================
+   Package auto-commit ヘルパー (旧 PackageAutoCommit.wl を統合)
+   GitHubRefreshAndCommit の前段: docs 鮮度ゲート / 前回コミット差分 /
+   コミットメッセージ案 (決定論 or LLM) / DryRun 既定の駆動。
+   ============================================================ *)
+
+PackageDocsFreshnessGate::usage =
+  "PackageDocsFreshnessGate[packageName] は packageName_info/docs 配下の api.md / api_*.md が\n" <>
+  "対応する .wl ファイル以降に更新されているか (鮮度) を検査する。\n" <>
+  "api ドキュメントが対応 .wl より古い (= .wl 更新後にドキュメントが未更新) ものが\n" <>
+  "1 つでもあれば Proceed -> False とし、StaleDocs に <|Doc, Wl, DocDate, WlDate|> を列挙する。\n" <>
+  "対応規則: api.md <-> <pkg>.wl, api_<suffix>.md <-> <pkg>_<suffix>.wl。\n" <>
+  "対応 .wl が存在しない api ドキュメントは検査対象外。docs フォルダが無ければ Proceed -> True。\n" <>
+  "戻り値: <|Status, Package, Proceed, Checked, StaleDocs, DocsDir|>。";
+
+PackageCommitDiff::usage =
+  "PackageCommitDiff[packageName] は packageName の現ソースと前回コミットスナップショット\n" <>
+  "(GithubRepositories/<pkg>) との差分を ReadOnly に計算する。\n" <>
+  "upload_manifest.json を直接 Import し (GitHubReadManifest は自動編集するため呼ばない)、\n" <>
+  "GitHubRefreshAndCommit の前方マッピング (files=basename, directories=相対パス+exclude) を\n" <>
+  "再現して src<->snapshot を内容比較する。リフレッシュ前に呼ぶこと (リフレッシュ後はスナップショットが\n" <>
+  "上書きされ差分が消える)。\n" <>
+  "戻り値: <|Status, Package, SnapshotDir, SnapshotExists, Added, Changed, Removed,\n" <>
+  "          UnchangedCount, ChangeCount, ChangedDetail, Summary|>。";
+
+PackageCommitPlan::usage =
+  "PackageCommitPlan[packageName, opts] は鮮度ゲート -> 差分 -> コミットメッセージ案 を ReadOnly に組み立てる。\n" <>
+  "ゲートが Proceed -> False (docs 古い) なら Status -> Blocked、差分が無ければ Status -> NoChange。\n" <>
+  "両方 OK なら Status -> OK で CommitMessage を返す (実コミットはしない)。\n" <>
+  "opts: \"MessageGenerator\" -> Automatic (差分からの決定論的単文) | \"固定文字列\" | fn (diff Association を受け取り文字列を返す)、\n" <>
+  "      \"SkipDocsGate\" -> False (True で docs 鮮度ゲートを無視して進む; OK 結果に StaleDocs 警告 + DocsGateSkipped)。\n" <>
+  "戻り値: <|Status, Package, Proceed, (StaleDocs | Diff | CommitMessage), ...|>。";
+
+PackageCommit::usage =
+  "PackageCommit[packageName, opts] は PackageCommitPlan を実行し、Status -> OK のとき\n" <>
+  "GitHubRefreshAndCommit[packageName, CommitMessage] を呼ぶ。Blocked (docs 古い) / NoChange / Failed の\n" <>
+  "ときはコミットせず計画結果を返す。パッケージのメイン駆動関数。\n" <>
+  "opts: \"DryRun\" -> True (既定。実コミットせず計画とメッセージ案を返す), \"MessageGenerator\" -> Automatic,\n" <>
+  "      \"SkipDocsGate\" -> False (True は DryRun プレビュー専用でゲートを無視。実コミット (DryRun -> False) では\n" <>
+  "      SkipDocsGate に関わらず docs 古ければ Blocked で停止し StaleDocs を返す)。\n" <>
+  "戻り値: <|Status (DryRun|Committed|Blocked|NoChange|Failed), Committed, CommitMessage, ...|>。";
+
+PackageLLMMessageGenerator::usage =
+  "PackageLLMMessageGenerator[queryFn, opts] は LLM でコミットメッセージを生成する\n" <>
+  "MessageGenerator 関数 (diff Association -> 文字列) を返す。PackageCommit / PackageCommitPlan の\n" <>
+  "\"MessageGenerator\" オプションに渡す。\n" <>
+  "queryFn は prompt -> 文字列 の関数。モデル指定子 (tuple {provider,model} 例 $iModelSonnet、または\n" <>
+  "モデル名 String) を渡すと ClaudeCode`ClaudeQueryBg[prompt, Model->spec] で自動ラップする (要 claudecode)。\n" <>
+  "既定 (\"IncludeContent\"->True) では、変更ファイルの実際の変更行 (- 削除 / + 追加, PackageCommitDiff の\n" <>
+  "ChangedDetail から計算) をプロンプトに含め、何が変わったかを要約させる。ソース変更行を model に送るので\n" <>
+  "信頼できる model を使うこと。\"IncludeContent\"->False でファイル名のみ (低 privacy) に戻せる。\n" <>
+  "queryFn[prompt] が文字列を返さない / 空なら決定論メッセージにフォールバック。\n" <>
+  "opts: \"MaxChars\"->80, \"IncludeContent\"->True, \"MaxContentChars\"->4000, \"MaxPerFileChars\"->1500。\n" <>
+  "例: PackageCommit[\"github\",\"DryRun\"->False,\"MessageGenerator\"->PackageLLMMessageGenerator[$iModelSonnet]]。";
+
+
 Begin["`Private`"];
 
 $GitHubAPIBase = "https://api.github.com";
@@ -3223,5 +3279,445 @@ GitHubRevertCommit[packageName_String, commitSHA_String, reason_String:"",
     ]
   ];
 
+(* ============================================================
+   Package auto-commit (旧 PackageAutoCommit.wl を統合)
+   ============================================================ *)
+
+(* パッケージディレクトリ: Global`$packageDirectory を正準、無ければ本ファイル位置 *)
+iPACPackageDirectory[] := Module[{dir},
+  dir = Quiet @ Check[Global`$packageDirectory, $Failed];
+  If[StringQ[dir] && DirectoryQ[dir],
+    dir,
+    Quiet @ Check[DirectoryName[$InputFileName], $Failed]]
+];
+
+(* api ドキュメント 1 件 -> 対応 .wl のペア情報を構築する。
+   api.md       -> <pkg>.wl
+   api_<sfx>.md -> <pkg>_<sfx>.wl *)
+iPACApiWlPair[pkg_String, srcDir_String, docPath_String] := Module[
+  {base, wl, wlPath, docExists, wlExists},
+  base = FileBaseName[docPath];   (* "api" | "api_core" | ... *)
+  wl = If[base === "api",
+    pkg <> ".wl",
+    pkg <> "_" <> StringDrop[base, StringLength["api_"]] <> ".wl"];
+  wlPath = FileNameJoin[{srcDir, wl}];
+  docExists = FileExistsQ[docPath];
+  wlExists = FileExistsQ[wlPath];
+  <|
+    "Doc" -> FileNameTake[docPath], "DocPath" -> docPath,
+    "Wl" -> wl, "WlPath" -> wlPath, "WlExists" -> wlExists,
+    "DocDate" -> If[docExists, FileDate[docPath, "Modification"], Missing["NoFile"]],
+    "WlDate" -> If[wlExists, FileDate[wlPath, "Modification"], Missing["NoFile"]]
+  |>
+];
+
+(* doc が対応 .wl より古ければ stale (= .wl 更新後に doc が未更新)。
+   両方が実日付で、かつ厳密に doc < wl のときだけ stale。 *)
+iPACDocStaleQ[pair_Association] := Module[{dd, wd},
+  dd = pair["DocDate"]; wd = pair["WlDate"];
+  MatchQ[dd, _DateObject] && MatchQ[wd, _DateObject] &&
+    AbsoluteTime[dd] < AbsoluteTime[wd]
+];
+
+PackageDocsFreshnessGate[pkg_String] := Module[
+  {srcDir, docsDir, apiDocs, pairs, checked, stale},
+  srcDir = iPACPackageDirectory[];
+  If[!StringQ[srcDir],
+    Return[<|"Status" -> "Failed", "Package" -> pkg,
+      "Reason" -> "PackageDirectoryNotResolved"|>]];
+  docsDir = FileNameJoin[{srcDir, pkg <> "_info", "docs"}];
+  If[!DirectoryQ[docsDir],
+    Return[<|"Status" -> "NoDocs", "Package" -> pkg, "Proceed" -> True,
+      "StaleDocs" -> {}, "Checked" -> 0, "DocsDir" -> docsDir,
+      "Reason" -> "docs フォルダが無い (検査対象なし)"|>]];
+  apiDocs = FileNames[{"api.md", "api_*.md"}, docsDir];
+  pairs = iPACApiWlPair[pkg, srcDir, #] & /@ apiDocs;
+  checked = Select[pairs, TrueQ[#["WlExists"]] &];  (* 対応 .wl が在るものだけ検査 *)
+  stale = Select[checked, iPACDocStaleQ];
+  <|
+    "Status" -> "OK", "Package" -> pkg,
+    "Proceed" -> (Length[stale] === 0),
+    "Checked" -> Length[checked],
+    "StaleDocs" -> (KeyTake[#, {"Doc", "Wl", "DocDate", "WlDate"}] & /@ stale),
+    "DocsDir" -> docsDir
+  |>
+];
+
+PackageDocsFreshnessGate[___] :=
+  <|"Status" -> "Failed",
+    "Reason" -> "PackageDocsFreshnessGate[packageName_String] を期待。"|>;
+
+(* --- 前回コミットスナップショットとの差分 (iRefreshPackageGroup の前方マッピングを ReadOnly に再現) --- *)
+
+(* git 正規化パス (forward slash)。iNormalizeGitPath と同形。 *)
+iPACNormGit[s_String] := StringJoin[Riffle[FileNameSplit[s], "/"]];
+
+(* relBase/<dirAbs 相対パス> の git 相対パス。iCopyDirectoryFiltered の relPath と同形。 *)
+iPACDirRel[relBase_String, dirAbs_String, file_String] :=
+  iPACNormGit[relBase <> "/" <> FileNameJoin[FileNameDrop[file, FileNameDepth[dirAbs]]]];
+
+(* ディレクトリ配下の全ファイル (隠しファイル含む・非ディレクトリ)。iListLocalFiles 相当。 *)
+iPACDirFiles[dir_String] :=
+  If[DirectoryQ[dir],
+    DeleteDuplicates @ Select[
+      Join[FileNames["*", dir, Infinity], FileNames[".*", dir, Infinity]],
+      FileExistsQ[#] && ! DirectoryQ[#] &],
+    {}];
+
+(* exclude 判定 (prefix 一致)。iMatchExcludePattern と同形。 *)
+iPACExcluded[relPath_String, patterns_List] :=
+  AnyTrue[patterns, StringStartsQ[relPath, #] &];
+
+(* 2 ファイルが同一内容か (byte 一致)。 *)
+iPACSameContent[a_String, b_String] := Module[{ba, bb},
+  ba = Quiet @ Check[ReadByteArray[a], $Failed];
+  bb = Quiet @ Check[ReadByteArray[b], $Failed];
+  ba === bb
+];
+
+iPACDiffSummary[added_List, changed_List, removed_List] :=
+  "added " <> ToString[Length[added]] <>
+  ", changed " <> ToString[Length[changed]] <>
+  ", removed " <> ToString[Length[removed]];
+
+PackageCommitDiff[pkg_String] := Module[
+  {srcDir, snapDir, mfPath, manifest, files, dirs, patterns,
+   added = {}, changed = {}, removed = {}, unchanged = 0, copiedRel = {},
+   changedDetail = {}},
+  srcDir = iPACPackageDirectory[];
+  If[! StringQ[srcDir],
+    Return[<|"Status" -> "Failed", "Package" -> pkg,
+      "Reason" -> "PackageDirectoryNotResolved"|>]];
+  (* スナップショット dir = GithubRepositories/<pkg> (GitHubRepoPath と同構成)。 *)
+  snapDir = GitHubRepoPath[pkg];
+  (* manifest は直接 Import (read-only)。GitHubReadManifest は manifest を自動編集・保存するため呼ばない。 *)
+  mfPath = FileNameJoin[{srcDir, pkg <> "_info", "upload_manifest.json"}];
+  manifest = If[FileExistsQ[mfPath],
+    Quiet @ Check[Import[mfPath, "RawJSON"], $Failed], $Failed];
+  If[! AssociationQ[manifest],
+    manifest = <|"files" -> {pkg <> ".wl"},
+      "directories" -> {pkg <> "_info"}, "excludePatterns" -> {}|>];
+  files = Lookup[manifest, "files", {}];
+  dirs = Lookup[manifest, "directories", {}];
+  (* merged excludePatterns (manifest + default)。iMergedExcludePatterns と同形。 *)
+  patterns = DeleteDuplicates @ Join[
+    Lookup[manifest, "excludePatterns", {}],
+    {pkg <> "_info/history/", pkg <> "_info/references/"}];
+  (* --- 個別ファイル: src/<file> -> snap/<basename> --- *)
+  Do[
+    Module[{srcP, rel, snapP},
+      srcP = FileNameJoin[{srcDir, file}];
+      rel = FileNameTake[file];
+      snapP = FileNameJoin[{snapDir, rel}];
+      Which[
+        ! FileExistsQ[srcP],
+          If[FileExistsQ[snapP], AppendTo[removed, rel]],
+        ! FileExistsQ[snapP],
+          AppendTo[added, rel]; AppendTo[copiedRel, rel],
+        iPACSameContent[srcP, snapP],
+          unchanged++; AppendTo[copiedRel, rel],
+        True,
+          AppendTo[changed, rel]; AppendTo[copiedRel, rel];
+          AppendTo[changedDetail, <|"Rel" -> rel, "Src" -> srcP, "Snap" -> snapP|>]]],
+    {file, files}];
+  (* --- ディレクトリ: src/<dir>/<rest> -> snap/<dir>/<rest> (exclude 適用) --- *)
+  Do[
+    Module[{dirAbs, srcFiles},
+      dirAbs = FileNameJoin[{srcDir, dir}];
+      If[DirectoryQ[dirAbs],
+        srcFiles = iPACDirFiles[dirAbs];
+        Do[
+          Module[{rel, snapP},
+            rel = iPACDirRel[dir, dirAbs, f];
+            If[! iPACExcluded[rel, patterns],
+              snapP = FileNameJoin[Flatten[{snapDir, FileNameSplit[rel]}]];
+              AppendTo[copiedRel, rel];
+              Which[
+                ! FileExistsQ[snapP], AppendTo[added, rel],
+                iPACSameContent[f, snapP], unchanged++,
+                True, AppendTo[changed, rel];
+                  AppendTo[changedDetail, <|"Rel" -> rel, "Src" -> f, "Snap" -> snapP|>]]]],
+          {f, srcFiles}]]],
+    {dir, dirs}];
+  (* --- removed (dir): snapshot にあり現 src map に無く exclude でないファイル --- *)
+  Do[
+    Module[{snapDirAbs, snapFiles},
+      snapDirAbs = FileNameJoin[{snapDir, dir}];
+      If[DirectoryQ[snapDirAbs],
+        snapFiles = iPACDirFiles[snapDirAbs];
+        Do[
+          Module[{rel},
+            rel = iPACDirRel[dir, snapDirAbs, f];
+            If[! MemberQ[copiedRel, rel] && ! iPACExcluded[rel, patterns],
+              AppendTo[removed, rel]]],
+          {f, snapFiles}]]],
+    {dir, dirs}];
+  removed = DeleteDuplicates[removed];
+  <|
+    "Status" -> "OK", "Package" -> pkg,
+    "SnapshotDir" -> snapDir, "SnapshotExists" -> DirectoryQ[snapDir],
+    "Added" -> Sort[added], "Changed" -> Sort[changed], "Removed" -> Sort[removed],
+    "UnchangedCount" -> unchanged,
+    "ChangeCount" -> (Length[added] + Length[changed] + Length[removed]),
+    "ChangedDetail" -> changedDetail,
+    "Summary" -> iPACDiffSummary[added, changed, removed]
+  |>
+];
+
+PackageCommitDiff[___] :=
+  <|"Status" -> "Failed",
+    "Reason" -> "PackageCommitDiff[packageName_String] を期待。"|>;
+
+(* --- 決定論コミットメッセージ + 計画 + 駆動関数 --- *)
+
+(* relative path のリストを basename の読みやすい列挙にする (最大 3 件、超過は "ほか N 件")。 *)
+iPACNameList[rels_List] := Module[{names},
+  names = FileNameTake /@ rels;
+  If[Length[names] <= 3,
+    StringRiffle[names, ", "],
+    StringRiffle[Take[names, 2], ", "] <> " ほか " <> ToString[Length[names] - 2] <> " 件"]
+];
+
+(* 差分から決定論的な簡潔単文の日本語コミットメッセージを作る。 *)
+iPACDefaultMessage[diff_Association] := Module[{a, c, r, parts},
+  a = Lookup[diff, "Added", {}];
+  c = Lookup[diff, "Changed", {}];
+  r = Lookup[diff, "Removed", {}];
+  If[Length[a] + Length[c] + Length[r] === 0, Return["変更なし"]];
+  parts = {};
+  If[Length[c] > 0, AppendTo[parts, iPACNameList[c] <> " を更新"]];
+  If[Length[a] > 0, AppendTo[parts, iPACNameList[a] <> " を追加"]];
+  If[Length[r] > 0, AppendTo[parts, iPACNameList[r] <> " を削除"]];
+  StringRiffle[parts, "、"]
+];
+
+(* MessageGenerator の解決: Automatic=決定論、String=固定文、Function=diff を渡す。 *)
+iPACResolveMessage[gen_, diff_Association] := Which[
+  gen === Automatic, iPACDefaultMessage[diff],
+  StringQ[gen], gen,
+  True, Module[{m = Quiet @ Check[gen[diff], $Failed]},
+    If[StringQ[m], m, iPACDefaultMessage[diff]]]
+];
+
+Options[PackageCommitPlan] = {"MessageGenerator" -> Automatic, "SkipDocsGate" -> False};
+
+PackageCommitPlan[pkg_String, OptionsPattern[]] := Module[
+  {gate, diff, msg, skipGate, gateProceed, staleWarn},
+  skipGate = TrueQ[OptionValue["SkipDocsGate"]];
+  gate = PackageDocsFreshnessGate[pkg];
+  If[Lookup[gate, "Status", ""] === "Failed",
+    Return[<|"Status" -> "Failed", "Package" -> pkg, "Phase" -> "Gate",
+      "Detail" -> gate|>]];
+  gateProceed = TrueQ[Lookup[gate, "Proceed", False]];
+  If[! skipGate && ! gateProceed,
+    Return[<|"Status" -> "Blocked", "Package" -> pkg, "Proceed" -> False,
+      "Reason" -> "StaleDocs (対応 .wl 更新後に api ドキュメントが未更新)。SkipDocsGate -> True でゲート無視可。",
+      "StaleDocs" -> Lookup[gate, "StaleDocs", {}]|>]];
+  (* SkipDocsGate で古い docs のまま進めた場合は警告として StaleDocs を残す *)
+  staleWarn = If[skipGate && ! gateProceed, Lookup[gate, "StaleDocs", {}], {}];
+  diff = PackageCommitDiff[pkg];
+  If[Lookup[diff, "Status", ""] =!= "OK",
+    Return[<|"Status" -> "Failed", "Package" -> pkg, "Phase" -> "Diff",
+      "Detail" -> diff|>]];
+  If[Lookup[diff, "ChangeCount", 0] === 0,
+    Return[<|"Status" -> "NoChange", "Package" -> pkg, "Proceed" -> False,
+      "Reason" -> "差分なし (コミット対象なし)", "Diff" -> diff|>]];
+  msg = iPACResolveMessage[OptionValue["MessageGenerator"], diff];
+  <|"Status" -> "OK", "Package" -> pkg, "Proceed" -> True,
+    "StaleDocs" -> staleWarn, "DocsGateSkipped" -> (skipGate && ! gateProceed),
+    "Diff" -> diff, "CommitMessage" -> msg|>
+];
+
+PackageCommitPlan[___] :=
+  <|"Status" -> "Failed",
+    "Reason" -> "PackageCommitPlan[packageName_String, opts] を期待。"|>;
+
+PackageCommit::staledocs =
+  "`1` は api ドキュメント (`2`) が対応 .wl より古いため、実コミットを停止しました。" <>
+  "ドキュメントを更新してから再実行するか、確認だけなら DryRun + SkipDocsGate -> True を使ってください。";
+
+(* 非コミット結果 (Blocked/NoChange/Failed) の CommitMessage を意味のある Missing にする。
+   KeyAbsent ではなく理由付き Missing を返し、誤って実メッセージと混同しないようにする。 *)
+iPACNoCommitMessage[status_, pkg_String, plan_Association] := Switch[status,
+  "Blocked",
+    Missing["StaleDocs", pkg <> ": docs (api*.md) が対応 .wl より古いため停止。" <>
+      "更新するか、DryRun + SkipDocsGate -> True でメッセージ案を確認してください。"],
+  "NoChange",
+    Missing["NoChange", pkg <> ": 前回コミットからの差分がありません (コミット対象なし)。"],
+  "Failed",
+    Missing["Failed", ToString @ Lookup[plan, "Reason", Lookup[plan, "Phase", "失敗"]]],
+  _,
+    Missing["NoCommitMessage", ToString[status]]
+];
+
+Options[PackageCommit] = {"DryRun" -> True, "MessageGenerator" -> Automatic,
+  "SkipDocsGate" -> False};
+
+PackageCommit[pkg_String, OptionsPattern[]] := Module[
+  {dry, skipGate, plan, res},
+  dry = TrueQ[OptionValue["DryRun"]];
+  skipGate = TrueQ[OptionValue["SkipDocsGate"]];
+  (* SkipDocsGate は DryRun プレビュー専用。実コミット (DryRun -> False) では
+     SkipDocsGate に関わらず docs 鮮度ゲートを必ず適用する。 *)
+  plan = PackageCommitPlan[pkg, "MessageGenerator" -> OptionValue["MessageGenerator"],
+    "SkipDocsGate" -> (skipGate && dry)];
+  (* OK 以外 (Blocked / NoChange / Failed) はコミットしない *)
+  If[Lookup[plan, "Status", ""] =!= "OK",
+    Module[{st = Lookup[plan, "Status", ""], stale = Lookup[plan, "StaleDocs", {}]},
+      (* 実コミット要求が docs 古さで Blocked: 警告メッセージを出して停止 (実コミットでは SkipDocsGate 無効)。 *)
+      If[! dry && st === "Blocked",
+        Message[PackageCommit::staledocs, pkg,
+          StringRiffle[ToString @ Lookup[#, "Doc", "?"] & /@ stale, ", "]];
+        Return[<|"Status" -> "Blocked", "Package" -> pkg, "Committed" -> False,
+          "CommitMessage" -> iPACNoCommitMessage["Blocked", pkg, plan],
+          "Reason" -> "実コミットには docs 更新が必須です。下記 api ドキュメントを対応 .wl 以降に更新してから再実行してください " <>
+            "(SkipDocsGate は DryRun プレビュー専用で実コミットには効きません)。",
+          "StaleDocs" -> stale,
+          "Hint" -> "ドキュメント更新後に PackageCommit[\"" <> pkg <> "\", \"DryRun\" -> False] を再実行。"|>]];
+      (* それ以外 (DryRun Blocked / NoChange / Failed): CommitMessage を意味のある Missing で補う。 *)
+      Return[Append[plan, <|"Committed" -> False,
+        "CommitMessage" -> iPACNoCommitMessage[st, pkg, plan]|>]]]];
+  If[dry,
+    Return[<|"Status" -> "DryRun", "Package" -> pkg, "Committed" -> False,
+      "CommitMessage" -> plan["CommitMessage"], "Diff" -> plan["Diff"],
+      "DocsGateSkipped" -> Lookup[plan, "DocsGateSkipped", False],
+      "StaleDocs" -> Lookup[plan, "StaleDocs", {}],
+      "Note" -> "DryRun -> False で実コミット (GitHubRefreshAndCommit) を実行。"|>]];
+  res = GitHubRefreshAndCommit[pkg, plan["CommitMessage"]];
+  <|"Status" -> If[FailureQ[res], "Failed", "Committed"], "Package" -> pkg,
+    "Committed" -> ! FailureQ[res], "CommitMessage" -> plan["CommitMessage"],
+    "DocsGateSkipped" -> Lookup[plan, "DocsGateSkipped", False],
+    "StaleDocs" -> Lookup[plan, "StaleDocs", {}],
+    "Result" -> res|>
+];
+
+PackageCommit[___] :=
+  <|"Status" -> "Failed",
+    "Reason" -> "PackageCommit[packageName_String, opts] を期待。"|>;
+
+(* --- LLM コミットメッセージ生成 (MessageGenerator ビルダー、content-aware) --- *)
+
+(* 差分を LLM プロンプト用テキストに整形 (相対パス、変更種別ごと)。 *)
+iPACDiffForPrompt[diff_Association] := Module[{a, c, r, lines},
+  a = Lookup[diff, "Added", {}]; c = Lookup[diff, "Changed", {}]; r = Lookup[diff, "Removed", {}];
+  lines = {};
+  If[Length[c] > 0, AppendTo[lines, "変更: " <> StringRiffle[c, ", "]]];
+  If[Length[a] > 0, AppendTo[lines, "追加: " <> StringRiffle[a, ", "]]];
+  If[Length[r] > 0, AppendTo[lines, "削除: " <> StringRiffle[r, ", "]]];
+  If[lines === {}, "変更なし", StringRiffle[lines, "\n"]]
+];
+
+(* LLM 応答を単文メッセージに整形: code fence マーカー行のみ除去 (本文は残す) ->
+   先頭非空行 -> 前後引用符除去。フェンスで全体を囲んだ応答でも本文を失わない。 *)
+iPACCleanMessage[resp_String] := Module[{lines},
+  lines = StringTrim /@ StringSplit[resp, "\n"];
+  lines = DeleteCases[lines, l_ /; StringMatchQ[l, "```" ~~ ___]];  (* ```/```lang 行を除去 *)
+  lines = Select[lines, # =!= "" &];
+  If[lines === {}, Return["", Module]];
+  StringTrim[First[lines], ("\"" | "'" | "「" | "」" | "`")]
+];
+iPACCleanMessage[_] := "";
+
+(* ファイルを UTF-8 で行リストに読む (ReadString は $CharacterEncoding 依存なので避ける)。 *)
+iPACReadLines[path_String] := Module[{ba},
+  ba = Quiet @ Check[ReadByteArray[path], $Failed];
+  If[! ByteArrayQ[ba], Return[{}, Module]];
+  StringSplit[ByteArrayToString[ba, "UTF-8"], "\n"]
+];
+
+(* snap(旧) と src(新) の行差分を - 削除 / + 追加 で返す。
+   ハッシュ集合ベース (O(n))。順序保持・重複除去。巨大ファイルでも高速。 *)
+iPACUnifiedDiff[snapPath_String, srcPath_String, maxChars_Integer] := Module[
+  {old, new, oldSet, newSet, rem, add, out},
+  old = iPACReadLines[snapPath];
+  new = iPACReadLines[srcPath];
+  oldSet = AssociationThread[old -> True];
+  newSet = AssociationThread[new -> True];
+  rem = DeleteDuplicates @ Select[old, ! KeyExistsQ[newSet, #] && StringTrim[#] =!= "" &];
+  add = DeleteDuplicates @ Select[new, ! KeyExistsQ[oldSet, #] && StringTrim[#] =!= "" &];
+  out = StringJoin[
+    ("- " <> # <> "\n") & /@ Take[rem, UpTo[60]],
+    ("+ " <> # <> "\n") & /@ Take[add, UpTo[60]]];
+  If[StringLength[out] > maxChars, StringTake[out, maxChars] <> "\n...(truncated)", out]
+];
+
+(* ChangedDetail から変更内容セクションを組み立てる (合計/ファイル毎の文字数上限つき)。 *)
+iPACContentForPrompt[diff_Association, maxTotal_Integer, maxPerFile_Integer] := Module[
+  {detail, parts = {}, total = 0},
+  detail = Lookup[diff, "ChangedDetail", {}];
+  If[! ListQ[detail] || detail === {}, Return["", Module]];
+  Do[
+    Module[{rel, d, header, block},
+      rel = ToString @ Lookup[item, "Rel", "?"];
+      d = iPACUnifiedDiff[ToString @ Lookup[item, "Snap", ""],
+        ToString @ Lookup[item, "Src", ""], maxPerFile];
+      header = "## " <> rel <> "\n";
+      block = header <> d;
+      If[StringTrim[d] =!= "" && total + StringLength[block] <= maxTotal,
+        AppendTo[parts, block]; total += StringLength[block]]],
+    {item, detail}];
+  StringRiffle[parts, "\n"]
+];
+
+(* queryFn 解決: 関数/シンボルはそのまま。モデル指定子 (tuple {provider,model} or String) は
+   ClaudeCode`ClaudeQueryBg[prompt, Model -> spec] でラップ (弱呼び出し)。
+   Model オプションの symbol は Options[ClaudeQueryBg] から取り出し context 差を吸収。 *)
+iPACWrapModel[spec_] := With[
+  {qbg = ClaudeCode`ClaudeQueryBg,
+   modelKey = SelectFirst[Keys[Options[ClaudeCode`ClaudeQueryBg]],
+     SymbolName[#] === "Model" &, None]},
+  If[modelKey === None,
+    Function[p, qbg[p]],
+    With[{mk = modelKey, sp = spec}, Function[p, qbg[p, mk -> sp]]]]
+];
+iPACResolveQueryFn[spec_] := Which[
+  (ListQ[spec] || StringQ[spec]) &&
+    Length[Names["ClaudeCode`ClaudeQueryBg"]] > 0,
+    iPACWrapModel[spec],
+  True, spec
+];
+
+Options[PackageLLMMessageGenerator] = {
+  "MaxChars" -> 80, "IncludeContent" -> True,
+  "MaxContentChars" -> 4000, "MaxPerFileChars" -> 1500};
+
+PackageLLMMessageGenerator[queryFnSpec_, opts:OptionsPattern[]] := Module[
+  {maxC, incC, maxTotal, maxPerFile, qfn},
+  maxC = With[{m = OptionValue["MaxChars"]}, If[IntegerQ[m] && m > 0, m, 80]];
+  incC = TrueQ[OptionValue["IncludeContent"]];
+  maxTotal = With[{m = OptionValue["MaxContentChars"]}, If[IntegerQ[m] && m > 0, m, 4000]];
+  maxPerFile = With[{m = OptionValue["MaxPerFileChars"]}, If[IntegerQ[m] && m > 0, m, 1500]];
+  qfn = iPACResolveQueryFn[queryFnSpec];
+  Function[diff,
+    Module[{contentSec, prompt, resp, msg},
+      If[! AssociationQ[diff], Return[iPACDefaultMessage[<||>], Module]];
+      contentSec = If[incC, iPACContentForPrompt[diff, maxTotal, maxPerFile], ""];
+      prompt = "次は、あるパッケージの前回コミットからの変更です。これを説明する日本語のコミットメッセージを 1 文で書いてください。\n" <>
+        "文末は体言止め (名詞・サ変名詞で終える。例: 追加 / 刷新 / 修正 / 整理 / 対応)。" <>
+        "「〜した」「〜する」「〜しました」「〜するとともに」等の冗長な言い回しは避け、" <>
+        "複数の変更は読点で簡潔につなぐ。" <> ToString[maxC] <> " 字以内、句点は末尾に 1 つだけ。\n" <>
+        "ファイル名の列挙ではなく、何をしたか (機能追加・不具合修正・挙動変更など) を要約する。\n" <>
+        "例: パレットUIコードを整理しAPIリファレンスを刷新、高プライバシーデータをクラウドLLMのコンテキストに送信しない制約をCLAUDE.mdに追加。\n" <>
+        "コミットメッセージ本文のみを出力し、前置き・引用符・コードフェンスは付けない。\n\n" <>
+        "変更ファイル:\n" <> iPACDiffForPrompt[diff] <>
+        If[contentSec =!= "", "\n\n変更内容 (- 削除行 / + 追加行):\n" <> contentSec, ""];
+      resp = Quiet @ Check[qfn[prompt], $Failed];
+      msg = If[StringQ[resp], iPACCleanMessage[resp], ""];
+      If[StringQ[msg] && StringTrim[msg] =!= "", msg, iPACDefaultMessage[diff]]
+    ]]
+];
+
 End[];
 EndPackage[];
+
+(* SourceVault PromptRouter 連携 (Hybrid A): ClaudeOrchestrator がロード済みなら
+   PackageCommitPlan を ReadOnly FunctionRoute handler として登録する (弱呼び出し、未ロードは no-op)。
+   これにより SourceVaultCallableAllowlistView のマージビューに現れ、FunctionRoute 解決の対象になる。
+   駆動関数 PackageCommit (副作用) は WorkflowRoute 扱いなのでここでは登録しない。 *)
+If[Length[Names["ClaudeOrchestrator`ClaudeWorkflowRegisterHandler"]] > 0,
+  Quiet @ Check[
+    ClaudeOrchestrator`ClaudeWorkflowRegisterHandler["PackageCommitPlan",
+      <|"Symbol"             -> GitHubREST`PackageCommitPlan,
+        "UseAsFunctionRoute" -> True, "UseAsHandlerRef" -> True,
+        "SideEffectClass"    -> "ReadOnly", "OwnerPackage" -> "github"|>],
+    Null]];
