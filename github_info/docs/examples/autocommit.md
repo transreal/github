@@ -3,7 +3,7 @@
 任意のローカルパッケージを GitHub へオートコミットする支援関数群（旧 `PackageAutoCommit.wl`、**github.wl に統合**）の使い方と、`SourceVault_promptrouter` 連携（プロンプトから呼ぶ）の実行例。
 本書のコードはすべて wolframscript / ノートブックで検証済みの API に基づく。
 
-- これらの関数（`PackageDocsFreshnessGate` / `PackageCommitDiff` / `PackageCommitPlan` / `PackageCommit` / `PackageLLMMessageGenerator`）は **`github.wl` をロードすれば使える**（`GitHubREST\`` context）。
+- これらの関数（`PackageDocsFreshnessGate` / `PackageCommitDiff` / `PackageCommitPlan` / `PackageCommit` / `PackageCommitDeletionPreview` / `PackageLLMMessageGenerator`）は **`github.wl` をロードすれば使える**（`GitHubREST\`` context）。
 - 副作用について: 実コミット（`GitHubRefreshAndCommit`）と実 deposit 以外は ReadOnly。`PackageCommit` の既定は `"DryRun" -> True`。
 
 ---
@@ -13,10 +13,10 @@
 ```wolfram
 Block[{$CharacterEncoding = "UTF-8"}, Get["github.wl"]];
 (* これだけで PackageDocsFreshnessGate / PackageCommitDiff / PackageCommitPlan /
-   PackageCommit / PackageLLMMessageGenerator が使える *)
+   PackageCommit / PackageCommitDeletionPreview / PackageLLMMessageGenerator が使える *)
 ```
 
-公開シンボル: `PackageDocsFreshnessGate`, `PackageCommitDiff`, `PackageCommitPlan`, `PackageCommit`, `PackageLLMMessageGenerator`, `$PackageAutoCommitVersion`。
+公開シンボル: `PackageDocsFreshnessGate`, `PackageCommitDiff`, `PackageCommitPlan`, `PackageCommit`, `PackageCommitDeletionPreview`, `PackageLLMMessageGenerator`, `$PackageCommitModel`, `$PackageAutoCommitVersion`。
 
 ---
 
@@ -40,6 +40,8 @@ PackageDocsFreshnessGate["存在しないパッケージ"]
 
 対応 `.wl` が無い api ドキュメントは検査対象外。
 
+> 内部的には、doc 生成ツール（`ClaudeUpdateDocumentation` 等）が doc 生成成功時や「最新です」判定時に記録するコンテンツハッシュ（サイドカー記録）も鮮度判定の一次情報として使われる。ハッシュが未記録（まだ doc 生成／判定していない）か、記録が読めない場合のみ、上記の `.wl` との更新日時（mtime）比較にフォールバックする。
+
 ---
 
 ## 2. 前回コミットとの差分 — `PackageCommitDiff[pkg]`
@@ -62,7 +64,11 @@ PackageCommitDiff["SourceVault"]
       "Summary"->"added 2, changed 6, removed 0" *)
 ```
 
-`manifest` の `excludePatterns`（既定 `<pkg>_info/history|references/`）と前方マッピング（files=basename, directories=相対パス）を `iRefreshPackageGroup` と同形で再現。差分はリフレッシュ前に取ること（リフレッシュ後はスナップショットが上書きされ差分が消える）。
+`manifest` の `excludePatterns`（既定 `<pkg>_info/history/`, `<pkg>_info/references/`, `<pkg>_info/docs/docs/`）と前方マッピング（files=basename, directories=相対パス）を `iRefreshPackageGroup` と同形で再現する。差分はリフレッシュ前に取ること（リフレッシュ後はスナップショットが上書きされ差分が消える）。
+
+> `<pkg>_info/docs/docs/`（ネストした `docs` フォルダの重複）はマニフェストの有無に関わらず常に保護される既定除外パターンで、2026-07-08 に追加された。過去の同期事故で紛れ込んだこのネスト重複が `GitHubPull` のたびにローカルへ再生成され、doc 更新の対象が膨張 → push で再コミット、という永久ループを起こしていたため、これを断つための保護。**保護パターンに該当するファイルは `DeleteMissing -> True` でも削除されない**ので、不要になった場合は手動で削除する必要がある（削除しないとツリーに残り続ける）。
+
+`ChangedDetail`（各ファイルの `<|"Rel", "Src", "Snap"|>`）は **変更ファイルと追加ファイルの両方**を含む（追加ファイルは `Snap` が存在しないパス＝全行が新規）。§5 の LLM メッセージ生成が「追加ファイルの中身」も要約できるのはこのため。
 
 ---
 
@@ -83,13 +89,24 @@ PackageCommitPlan["SourceVault"]
 
 ```wolfram
 (* メッセージ生成方式を指定 *)
-PackageCommitPlan["mypkg", "MessageGenerator" -> Automatic]        (* 決定論的単文 *)
+PackageCommitPlan["mypkg", "MessageGenerator" -> Automatic]        (* 既定: claudecode ロード済みなら LLM 内容ベース、無ければ決定論 *)
 PackageCommitPlan["mypkg", "MessageGenerator" -> "手動の固定文"]    (* 固定文字列 *)
 PackageCommitPlan["mypkg", "MessageGenerator" -> (myFn[#] &)]      (* diff を受け取る関数 *)
 ```
 
-決定論メッセージの形（`MessageGenerator -> Automatic`）: 「basename 列挙（最大 3 件、超過は先頭 2＋ほか N 件）を 更新／追加／削除、で連結」。
+`MessageGenerator -> Automatic`（既定）は `$PackageCommitModel` で挙動が決まる（§5.6）。**既定ではさらに `$PackageCommitModel` も `Automatic` で、claudecode がロード済みなら周囲の既定モデルで内容ベースのメッセージを生成する。**
+
+決定論メッセージ（claudecode 未ロード時のフォールバック、または `$PackageCommitModel = None`）の形: 「basename 列挙（最大 3 件、超過は先頭 2＋ほか N 件）を 更新／追加／削除、で連結」。
 例: `claudecode.wl, CLAUDE.md を更新`、`c1.wl, c2.wl ほか 3 件 を更新、p.wl, q.wl を追加、old.wl を削除`。
+
+### `SkipDocsGate`（docs 鮮度ゲートの一時スキップ／**DryRun 限定**）
+
+```wolfram
+PackageCommitPlan["SourceVault", "SkipDocsGate" -> True]
+(* docs が古くてもゲートを飛ばして Status->"OK"+CommitMessage を返す（プレビュー用途） *)
+```
+
+> **`SkipDocsGate` は DryRun のプレビューでしか効かない。** `PackageCommit[..., "DryRun" -> False]` の実コミットでは `SkipDocsGate -> True` を指定しても **必ず**ゲートで止まる（§4）。docs 陳腐化のまま実コミットしてしまう事故を防ぐため。
 
 ---
 
@@ -111,12 +128,53 @@ PackageCommit["github", "DryRun" -> False]
 `Status`: `DryRun` | `Committed` | `Blocked`(docs 古い) | `NoChange` | `Failed`。
 **実コミットでも、docs 古い or 差分なしなら止まる**（ゲート→計画の判定をそのまま使う）。
 
+### `SkipDocsGate` は DryRun 専用（安全設計）
+
+```wolfram
+(* DryRun のプレビューでは SkipDocsGate でゲートを飛ばせる *)
+PackageCommit["SourceVault", "DryRun" -> True, "SkipDocsGate" -> True]["CommitMessage"]
+(* => docs 古くてもメッセージ案が返る *)
+
+(* 実コミットでは SkipDocsGate -> True でも必ず止まる *)
+PackageCommit["SourceVault", "DryRun" -> False, "SkipDocsGate" -> True]
+(* => Status->"Blocked", Committed->False。docs 古いまま実コミットしない *)
+```
+
+内部的には `PackageCommitPlan[pkg, ..., "SkipDocsGate" -> (skipGate && dry)]` として、`DryRun -> False` のときは `SkipDocsGate` を無効化している。実コミットが `Blocked` になると `Message[PackageCommit::staledocs, pkg, docNames]` の警告を出し、`"CommitMessage"` には理由入りの `Missing["StaleDocs", ...]` を返す（`Missing["KeyAbsent", ...]` のような不親切な出力にはならない）。
+
+### `DeleteMissing`（リモート残骸の削除・既定 `False`）
+
+```wolfram
+PackageCommit["mypkg", "DryRun" -> False, "DeleteMissing" -> True]
+```
+
+`"DeleteMissing" -> True` にすると、`GitHubRefreshAndCommit[pkg, CommitMessage, "DeleteMissing" -> True]` として転送され、ローカルミラーに存在しないリモート blob（GitHub 側で手動削除した／過去の同期事故で紛れ込んだ残骸など）がコミットで削除される。既定 `False`（安全側）。
+**`True` にする前には必ず `PackageCommitDeletionPreview[pkg]`（§4.5）で削除候補を確認すること。**
+
+---
+
+## 4.5. 削除プレビュー — `PackageCommitDeletionPreview[pkg]`（`DeleteMissing` 前に必ず確認）
+
+`PackageCommit[..., "DeleteMissing" -> True]` で削除される対象（リモート tree にあってローカルミラーに無い blob）を、`GitHubCommit` の `DeleteMissing` 計算（リモート tree − ローカルミラー）と同じロジックで、**実行せずに** 列挙する読み取り専用関数。
+
+```wolfram
+PackageCommitDeletionPreview["SourceVault"]
+(* => <|"WouldDelete"->{"old/removed_file.wl", ...},
+        "RemoteCount"->42, "LocalCount"->39|> *)
+```
+
+- `WouldDelete` はソート済みの相対パスリスト（削除対象＝リモートにあってミラーに無いもの全部）。空なら削除候補なし。
+- §2 の除外パターンで保護されたミラー内ファイル（`<pkg>_info/docs/docs/` 等）は先にミラーから除外して比較するため、`WouldDelete` には現れない。保護パターン該当ファイルは `DeleteMissing -> True` でも削除されないので、不要なら手動削除が必要。
+- 同じ式を読み取り専用で再現するだけで、リモートにもミラーにも一切手を触れない。
+
 ---
 
 ## 5. LLM メッセージ生成 — `PackageLLMMessageGenerator[queryFn, opts]`（v0.5.0: content-aware）
 
 LLM で単文コミットメッセージを生成する `MessageGenerator`（`diff -> String`）を返す。
 **既定で実際の変更行（`- 削除 / + 追加`）をプロンプトに含め**、「どのファイルが変わったか」ではなく「何をしたか（機能追加・不具合修正・挙動変更）」を要約させる。
+
+**追加ファイルの中身も含まれる**: 変更ファイルだけでなく**新規追加ファイルの内容**もプロンプトに入る（`(新規ファイル)` マーカー付き・全行が `+`）。「◯◯.md を追加」のような自明な羅列でなく、追加物の**目的**を反映したメッセージになる。各ファイルには公平なバジェット（`Min[MaxPerFileChars, Max[300, Ceiling[MaxContentChars/ファイル数]]]`）を割り当て、ファイル数が多くても新規ファイルがプロンプトから落ちないようにしている。
 
 ### queryFn — 関数 or モデル指定子
 
@@ -158,7 +216,40 @@ PackageLLMMessageGenerator[Function[prompt, "core の依存を修正"]][PackageC
 (* => "core の依存を修正" (mock の戻り値) *)
 ```
 
-行差分はハッシュ集合ベース（O(n)）で、巨大ファイル（claudecode.wl ~28000 行）でも高速。`PackageCommitDiff` の `ChangedDetail`（各変更ファイルの `Rel`/`Src`/`Snap`）を使う。
+行差分はハッシュ集合ベース（O(n)）で、巨大ファイル（claudecode.wl ~28000 行）でも高速。`PackageCommitDiff` の `ChangedDetail`（各ファイルの `Rel`/`Src`/`Snap`）を使う。
+
+### 5.6 既定モデル `$PackageCommitModel`（既定で内容ベース／`MessageGenerator` 不要）
+
+`"MessageGenerator" -> Automatic`（＝未指定）のときの**既定コミットメッセージモデル**。
+
+**既定 `Automatic` は、claudecode がロード済みなら周囲の既定モデル（`$ClaudeModel`）で差分内容を要約した LLM メッセージを自動生成する。** モデルの明示設定は不要 —— `PackageCommit["pkg", "DryRun" -> True]["CommitMessage"]` がそのまま内容ベースのメッセージを返す。claudecode 未ロード時や LLM 失敗時は決定論的なファイル名列挙にフォールバックする。
+
+```wolfram
+(* 何も設定しなくても内容ベース（claudecode ロード済みが前提） *)
+PackageCommit["SourceVault", "DryRun" -> True]["CommitMessage"]
+(* => "packageapiアダプタを追加しapi.mdを関数粒度で索引化・検索、MCPとauxに配線しAPIリファレンスを新設。" *)
+```
+
+| `$PackageCommitModel` | 意味 |
+|---|---|
+| `Automatic`（既定） | claudecode ロード済み → 周囲の既定モデルで内容ベース生成／未ロード・失敗 → 決定論フォールバック |
+| モデル指定子（tuple `{provider, model}` 例 `$iModelSonnet` / モデル名 String / `prompt->String` 関数） | そのモデル・関数で生成 |
+| `None` | LLM を呼ばず**決定論的なファイル名列挙に固定**（opt-out） |
+
+```wolfram
+(* 特定モデルに固定したいとき *)
+$PackageCommitModel = $iModelSonnet;   (* 例: {"claudecode", "claude-sonnet-4-6"} *)
+
+(* LLM を呼ばせたくない（従来の決定論メッセージ）とき *)
+$PackageCommitModel = None;
+```
+
+- 再ロードしても値は保持（`If[! ValueQ[...], $PackageCommitModel = Automatic]` で初期化）。
+- 都度だけモデルを変えたいときは `"MessageGenerator" -> PackageLLMMessageGenerator[$iModelSonnet]` を渡す（明示指定が `$PackageCommitModel` より優先）。
+- モデル指定子は `PackageLLMMessageGenerator[$PackageCommitModel]` として解決され、§5 のオプション（`IncludeContent` など）は既定値が使われる。
+
+> **注意（LLM 呼び出し）**: 既定 `Automatic` では `PackageCommitPlan` / `PackageCommit`（DryRun 含む）を呼ぶたびに LLM が 1 回走る。plan の結果を変数に束ねれば（`p = PackageCommit[...]; p["CommitMessage"]`）多重呼び出しにはならない。LLM を止めたいときは `$PackageCommitModel = None`。
+> **privacy**: 内容ベース生成は変更行（ソース）を model に送る。cloud model を使う環境では承知の上で。社外秘コードは `$PackageCommitModel = None`（決定論）か local model、または `"MessageGenerator" -> PackageLLMMessageGenerator[<local>, "IncludeContent" -> False]` を。
 
 ---
 
@@ -337,10 +428,14 @@ privacy approval: `RequiresApproval`（高 privacy / 未裏付け ref）は `"Ap
 
 - これらの関数は `github.wl` に統合済み（`GitHubREST\`` context）。`Get["github.wl"]` だけでよい（旧 `PackageAutoCommit.wl` は削除）。
 - `PackageCommit` の既定は `"DryRun" -> True`。実コミットは `"DryRun" -> False`。
+- `SkipDocsGate -> True` は **DryRun のプレビュー限定**。実コミット（`DryRun -> False`）では効かず、docs 古ければ必ず `Blocked`。
+- `PackageCommit[..., "DeleteMissing" -> True]`（既定 `False`）はリモート残骸ファイルも削除してコミットする。**必ず先に `PackageCommitDeletionPreview[pkg]`（§4.5）で削除候補を確認する。**
+- `<pkg>_info/docs/docs/` 等の保護除外パターン（§2）に該当するファイルは `DeleteMissing -> True` でも削除されない。残す必要が無くなったら手動で削除すること。
+- 既定（`Automatic`）で claudecode ロード済みなら内容ベースのメッセージが出る。決定論（ファイル名列挙）に固定したいときは `$PackageCommitModel = None`。特定モデルに固定は `$PackageCommitModel = <モデル>` か `"MessageGenerator" -> PackageLLMMessageGenerator[<モデル>]`。既定は plan/commit ごとに LLM が 1 回走る。
 - ゲートが多くのパッケージで `Blocked` を返すのは正常（docs が `.wl` より古い）。実コミット前に api ドキュメントを更新する。
-- `PackageCommitDiff` は `GitHubReadManifest` を呼ばない（あれは manifest を自動編集する非 ReadOnly）。
+- `PackageCommitDiff` / `PackageCommitDeletionPreview` はいずれも `GitHubReadManifest` を呼ばない（あれは manifest を自動編集する非 ReadOnly）。
 - route 登録には `"Type" -> "PromptRoute"` が必須。
-- 副作用（実コミット・実 deposit）以外はすべて ReadOnly。`mode "plan"` / `DryRun` で安全に確認できる。
+- 副作用（実コミット・実 deposit）以外はすべて ReadOnly。`mode "plan"` / `DryRun` / `PackageCommitDeletionPreview` で安全に確認できる。
 - `SourceVault_promptrouter` のソースは all-ASCII 規約。route の日本語 KeywordsAny は登録データなので問題ない。
 
 ---

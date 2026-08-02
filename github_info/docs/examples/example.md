@@ -325,6 +325,8 @@ GitHubReadManifest["mypackage"]
 
 マニフェストが存在しない場合は、パッケージ種別（`.wl` / パクレット）に基づいてデフォルト構成が返されます。パッケージ種別が変わった場合（例: `.wl` → パクレット変換後）は自動的に更新されます。
 
+**保護される既定除外パターン:** `history/`・`references/`・`docs/docs/` などのデフォルト除外パターンは、`upload_manifest.json` の有無やカスタム設定に関わらず常に保護されます。特に `<pkg>_info/docs/docs/` は、過去にネストした `docs` フォルダ（`docs/docs/`）がリポジトリに混入し、`GitHubPull` のたびにローカルへ再生成されて doc 更新対象が膨張し続ける無限ループを起こした事故を受けて追加された除外パターンです。これらの保護対象ファイルはローカルミラーへコピーされませんが、リポジトリ側に残骸として既に存在する場合は `GitHubCommit` の `DeleteMissing` 計算でも自動削除されないため、手動で削除する必要があります（削除候補の確認には `PackageCommitDeletionPreview` を使用してください）。
+
 ### 11-3. マニフェストに基づくグループリフレッシュ
 
 ```mathematica
@@ -471,6 +473,8 @@ PackageDocsFreshnessGate["github"]
 
 対応する `.wl` が存在しない api ドキュメントは検査対象外です。docs フォルダが無ければ `"Proceed" -> True` になります。
 
+**鮮度判定の仕組み:** 鮮度判定は内容のハッシュ比較を優先し、記録されたハッシュが無い場合や内容が読み取れない場合のみ更新日時（mtime）にフォールバックします。`api.md` 本体も予約キー `"@main"` でハッシュが記録されるため（`api_<aux>.md` は `auxName` で記録）、ファイルコピーやタイムスタンプの変化だけで誤って「古い」と判定されにくくなっています。
+
 ### 16-2. 前回コミットとの差分計算
 
 ```mathematica
@@ -525,7 +529,16 @@ PackageCommit["github", "DryRun" -> False]
 
 `PackageCommitPlan` を実行し、`"Status" -> "OK"` のときに `GitHubRefreshAndCommit[packageName, CommitMessage]` を呼びます。`Blocked`（docs が古い）・`NoChange`・`Failed` のときはコミットせず計画結果を返します。
 
-`"Status"` の取り得る値は `DryRun` / `Committed` / `Blocked` / `NoChange` / `Failed` です。実コミット（`"DryRun" -> False`）では `"SkipDocsGate"` の指定に関わらず docs が古ければ `Blocked` で停止し `StaleDocs` を返します（`"SkipDocsGate" -> True` は DryRun プレビュー専用）。
+`"Status"` の取り得る値は `DryRun` / `Committed` / `Blocked` / `NoChange` / `Failed` です。実コミット（`"DryRun" -> False`）では `"SkipDocsGate"` の指定に関わらず docs が古ければ `Blocked` で停止し `StaleDocs` を返します（`"SkipDocsGate" -> True` は DryRun プレビュー専用です）。
+
+**リモート残骸の掃除（DeleteMissing）:**
+
+```mathematica
+(* リモートにあってローカルミラーに無いファイルも削除してコミットする *)
+PackageCommit["github", "DryRun" -> False, "DeleteMissing" -> True]
+```
+
+`"DeleteMissing" -> True`（既定値 `False`）を指定すると、`GitHubRefreshAndCommit` へそのまま転送され、リモートリポジトリに残っているがローカルミラーには存在しないファイルが削除対象として tree に含められます。破壊的な操作のため、実行前に必ず `PackageCommitDeletionPreview` で削除候補を確認してください。
 
 ### 16-5. LLM によるコミットメッセージ生成
 
@@ -549,3 +562,15 @@ PackageCommit["github", "DryRun" -> False,
 | `"MaxPerFileChars"` | `1500` | 1 ファイルあたりの変更行の最大文字数 |
 
 生成されるコミットメッセージは決定論的な簡潔単文（体言止め）で、配布前のレビューに利用できます。
+
+### 16-6. リモート削除候補のプレビュー（PackageCommitDeletionPreview）
+
+```mathematica
+PackageCommitDeletionPreview["github"]
+```
+
+**出力例:** `<|"WouldDelete" -> {"old_module.wl", "github_info/docs/legacy.md"}, "RemoteCount" -> 12, "LocalCount" -> 10|>`
+
+`PackageCommit[..., "DeleteMissing" -> True]`（または `GitHubCommit[..., DeleteMissing -> True]`）を実行した場合に削除されることになるリモートファイル（リモート tree にあってローカルミラーには無い blob）を、実際には削除せずに列挙する読み取り専用の関数です。ミラーには一切手を触れません。
+
+`"WouldDelete"` は削除候補パスの一覧（リモート `tree` からローカルミラーに存在するパスを除いたもの）、`"RemoteCount"` はリモート tree のファイル数、`"LocalCount"` はローカルミラーのファイル数です。破壊的な `DeleteMissing -> True` の前に、想定外のファイルが削除対象に含まれていないかを必ず確認してください。

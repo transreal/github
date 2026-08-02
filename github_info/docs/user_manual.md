@@ -157,6 +157,8 @@ GitHubValidateManifest["mypackage"]
 
 **ソース削除ファイルの自動クリーンアップ:** ソース側（`$packageDirectory`）で削除されたファイルは、ローカルリポジトリの各マニフェストディレクトリからも自動的に削除されます。コピー対象にも除外パターン対象にも該当しないファイルが削除対象となります。
 
+**既定で保護される除外パターン:** マニフェストの `excludePatterns` の設定有無に関わらず、`<<パッケージ名>>_info/history/`・`<<パッケージ名>>_info/references/`・`<<パッケージ名>>_info/docs/docs/` は常に除外対象として保護されます。この保護は pull コピー・push スナップショット・stale ファイル掃除のすべての経路に適用されます。特に `docs/docs/` パターンは、過去の同期事故でリポジトリ内にネストした `docs` フォルダの重複が混入した際、pull のたびにローカルへ再生成されて doc 更新対象が膨張し続ける（→ push で再コミットが繰り返される）永久ループを断つために追加されました。リポジトリ側に残骸があってもローカルへは二度と取り込まれません。
+
 ```mathematica
 GitHubRefreshLocalPackageGroup["mypackage"]
 (* -> <|"CopiedFiles" -> {...},
@@ -516,6 +518,7 @@ $GitHubLicenseHolder = "Katsunobu Imai"
 - **docs 鮮度ゲート** — ドキュメント（`api.md` / `api_*.md`）がソース更新に追従しているかを確認し、古い場合はコミットを止めます。
 - **前回コミット差分** — 現ソースと前回コミットスナップショットを読み取り専用で比較します。
 - **コミットメッセージ案** — 差分から決定論的な単文、または LLM で要約したメッセージを生成します。
+- **削除プレビュー** — `DeleteMissing -> True` で削除される予定のリモートファイルを実行前に読み取り専用で確認します。
 - **駆動関数** — 既定では DryRun（実コミットせず計画とメッセージ案を返す）で動作し、確認後に実コミットへ進みます。
 
 典型的なワークフローは次のとおりです。
@@ -540,6 +543,7 @@ PackageCommit["github", "DryRun" -> False]
 - api ドキュメントが対応 `.wl` より古い（= `.wl` 更新後にドキュメントが未更新）ものが 1 つでもあれば `Proceed -> False` となり、`StaleDocs` に `<|Doc, Wl, DocDate, WlDate|>` を列挙します。
 - 対応する `.wl` が存在しない api ドキュメントは検査対象外です。
 - `docs` フォルダが無ければ `Proceed -> True` です。
+- 鮮度判定は可能な場合 `.wl` の内容ハッシュ比較を優先し、比較できない場合のみ更新日時（mtime）比較にフォールバックします。この内容ハッシュ判定は `api.md`（本体）・`api_*.md`（補助）の両方に適用され、Dropbox 同期などで内容は変わらず mtime だけがずれた場合に誤って stale 判定されるのを防ぎます。
 
 ```mathematica
 PackageDocsFreshnessGate["github"]
@@ -611,6 +615,7 @@ PackageCommitPlan["github"]
 | `"DryRun"` | `True` | 既定。実コミットせず計画とメッセージ案を返す。`False` で実コミット |
 | `"MessageGenerator"` | `Automatic` | `PackageCommitPlan` と同じ。`Automatic` / 固定文字列 / 関数 |
 | `"SkipDocsGate"` | `False` | `True` は DryRun プレビュー専用でゲートを無視する。実コミット（`DryRun -> False`）では `SkipDocsGate` に関わらず docs が古ければ `Blocked` で停止し `StaleDocs` を返す |
+| `"DeleteMissing"` | `False` | `True` にすると実コミット時に `GitHubRefreshAndCommit` の `DeleteMissing -> True` を転送し、リモートの残骸ファイル（ローカルミラーに存在しないリモート blob）を削除する |
 
 ```mathematica
 (* DryRun（既定）: メッセージ案を確認 *)
@@ -621,11 +626,32 @@ PackageCommit["github", "SkipDocsGate" -> True]
 
 (* 実コミット *)
 PackageCommit["github", "DryRun" -> False]
+
+(* リモートの残骸ファイルも削除して実コミット *)
+PackageCommit["github", "DryRun" -> False, "DeleteMissing" -> True]
 ```
 
 **docs が古いまま実コミットを試みた場合:** 警告メッセージが表示され `Status -> Blocked` で停止します。ドキュメントを更新してから再実行するか、確認だけなら `"DryRun" -> True` + `"SkipDocsGate" -> True` でメッセージ案を確認してください。
 
+**`"DeleteMissing" -> True` を使う前の注意:** 削除対象は「リモートにあってローカルミラーに無いもの全部」です。実行前に必ず `PackageCommitDeletionPreview[packageName]` で削除候補を確認してください。また、既定除外パターンで保護されたミラー内ファイル（`docs/docs` 等）は先にミラーから手動削除しないとツリーに残り続け、削除対象になりません。
+
 戻り値: `<|Status (DryRun | Committed | Blocked | NoChange | Failed), Committed, CommitMessage, ...|>`
+
+---
+
+### `PackageCommitDeletionPreview`
+`PackageCommit[..., "DeleteMissing" -> True]` で削除されるリモートファイル（リモート tree にあってローカルミラーに無い blob）を、**実行せずに**列挙する読み取り専用の確認用関数です。`GitHubCommit` の `DeleteMissing` 計算（リモート tree − ローカルミラー）と同じ式を、ミラーには一切手を触れずに再現します。
+
+```mathematica
+PackageCommitDeletionPreview["github"]
+(* -> <|"WouldDelete" -> {"old_file.wl", "obsolete/data.json", ...},
+       "RemoteCount" -> 42, "LocalCount" -> 40,
+       "Owner" -> "transreal", "Repository" -> "github", "Branch" -> "main"|> *)
+```
+
+**用途:** `PackageCommit[..., "DeleteMissing" -> True]` を使う前に必ず実行し、意図しないファイルが削除対象に含まれていないかを確認します。既定除外パターンで保護されたミラー内ファイル（`docs/docs` 等）はミラーから自動削除されないため、削除したい場合は先にミラーから手動で取り除いてから `PackageCommit` を実行してください。
+
+戻り値: `<|WouldDelete, RemoteCount, LocalCount, Owner, Repository, Branch|>`
 
 ---
 
@@ -744,6 +770,7 @@ GitHubRefreshAndCommit["mypackage", "feat: split into modules"]
 | `"DryRun"` | `True` | `PackageCommit` で実コミットせず計画とメッセージ案を返すか |
 | `"MessageGenerator"` | `Automatic` | コミットメッセージ生成方法（`Automatic` / 固定文字列 / diff を受け取る関数） |
 | `"SkipDocsGate"` | `False` | docs 鮮度ゲートを無視するか（実コミットでは無効。古い docs では Blocked で停止） |
+| `"DeleteMissing"` | `False` | `PackageCommit` で `True` にすると実コミット時にリモートの残骸ファイルを削除する（実行前に `PackageCommitDeletionPreview` での確認を推奨） |
 | `"MaxChars"` | `80` | `PackageLLMMessageGenerator` の生成メッセージ最大文字数 |
 | `"IncludeContent"` | `True` | `PackageLLMMessageGenerator` で変更行をプロンプトに含めるか |
 | `"MaxContentChars"` | `4000` | プロンプトに含める変更内容の合計文字数上限 |
@@ -754,4 +781,4 @@ GitHubRefreshAndCommit["mypackage", "feat: split into modules"]
 ## 関連パッケージ
 
 - [NBAccess](https://github.com/transreal/NBAccess) — API キー管理・ノートブック操作
-- [claudecode](https://github.com/transreal/claudecode) — Claude AI との連携（日本語パッケージ名の英語リポジトリ名自動生成、`PackageLLMMessageGenerator` の LLM 呼び出しにも使用）
+- [claudecode](https://github.com/transreal/claudecode) — Claude AI との連携(日本語パッケージ名の英語リポジトリ名自動生成、`PackageLLMMessageGenerator` の LLM 呼び出しにも使用)

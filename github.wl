@@ -215,12 +215,34 @@ GitHubListCommits::usage =
 GitHubCommitDataset::usage =
   "GitHubCommitDataset[packageName] \:306f\:30b3\:30df\:30c3\:30c8\:5c65\:6b74\:3092 Review/Pull/Revert \:30dc\:30bf\:30f3\:4ed8\:304d Grid \:3067\:8868\:793a\:3059\:308b\:3002\n" <>
   "\:30aa\:30d7\:30b7\:30e7\:30f3: Owner, Repository, Branch, MaxItems\:3002";
+GitHubCommitLog::usage =
+  "GitHubCommitLog[packageName] はリポジトリのコミット履歴を日付範囲付きで取得し\n" <>
+  "{<|\"SHA\", \"Date\", \"Author\", \"Message\"|>..} のコンパクト形式で返す。\n" <>
+  "リポジトリを一切変更しない読み取り専用操作のため、承認なしで実行できる\n" <>
+  "(NBAccess`$NBTrustedPackageHeads 登録済み)。GithubRepositories/ は .git を\n" <>
+  "持たないミラーなので、履歴は GitHub API から取得する。\n" <>
+  "オプション: MaxItems -> 50, \"Since\" -> None, \"Until\" -> None, Branch -> Automatic。\n" <>
+  "例: GitHubCommitLog[\"SourceVault\", \"Since\" -> \"2026-06-20\"]";
 GitHubReviewCommit::usage =
   "GitHubReviewCommit[packageName, sha] \:306f\:6307\:5b9a\:30b3\:30df\:30c3\:30c8\:306e\:8a73\:7d30\:30fb\:5dee\:5206\:3092\:30ce\:30fc\:30c8\:30d6\:30c3\:30af\:306b\:8868\:793a\:3059\:308b\:3002";
 GitHubRevertCommit::usage =
   "GitHubRevertCommit[packageName, sha] \:306f\:6307\:5b9a\:30b3\:30df\:30c3\:30c8\:306e\:5909\:66f4\:3092\:5143\:306b\:623b\:3059\:30ea\:30d0\:30fc\:30c8\:30b3\:30df\:30c3\:30c8\:3092\:4f5c\:6210\:3059\:308b\:3002";
 MaxItems::usage =
   "MaxItems \:306f GitHubListCommits/GitHubCommitDataset \:3067\:53d6\:5f97\:3059\:308b\:30b3\:30df\:30c3\:30c8\:6570\:306e\:4e0a\:9650\:3002\:65e2\:5b9a\:5024\:306f 30\:3002";
+
+GitHubServiceStatus::usage =
+  "GitHubServiceStatus[] は GitHub 稼働状況 (githubstatus.com) を取得し\n" <>
+  "<|\"Healthy\", \"Indicator\", \"Description\", \"CommitAffected\", \"Components\",\n" <>
+  "  \"Degraded\", \"Incidents\", \"CheckedAt\"|> を返す。\n" <>
+  "コミットが 500/502/503/504 で失敗したとき、コード側の不具合か GitHub 側の\n" <>
+  "障害かを切り分けるために使う。\n" <>
+  "\"CommitAffected\" は PackageCommit / GitHubCommit が依存するコンポーネント\n" <>
+  "(API Requests, Git Operations) のいずれかが operational でないとき True。\n" <>
+  "公開ステータスページの読み取りのみで認証不要。GitHub API トークンは送らない。\n" <>
+  "リポジトリを一切変更しない読み取り専用操作。\n" <>
+  "GitHubServiceStatus[key] で単一キーを取得。\n" <>
+  "オプション: \"Timeout\" -> 20。\n" <>
+  "例: GitHubServiceStatus[\"CommitAffected\"]";
 
 $GitHubLicenseHolder::usage =
   "$GitHubLicenseHolder \:306f MIT \:30e9\:30a4\:30bb\:30f3\:30b9\:306e\:8457\:4f5c\:6a29\:8005\:540d\:3002\n" <>
@@ -258,8 +280,9 @@ PackageCommitPlan::usage =
   "ゲートが Proceed -> False (docs 古い) なら Status -> Blocked、差分が無ければ Status -> NoChange。\n" <>
   "両方 OK なら Status -> OK で CommitMessage を返す (実コミットはしない)。\n" <>
   "opts: \"MessageGenerator\" -> Automatic (差分からの決定論的単文) | \"固定文字列\" | fn (diff Association を受け取り文字列を返す)、\n" <>
-  "      \"SkipDocsGate\" -> False (True で docs 鮮度ゲートを無視して進む; OK 結果に StaleDocs 警告 + DocsGateSkipped)。\n" <>
-  "戻り値: <|Status, Package, Proceed, (StaleDocs | Diff | CommitMessage), ...|>。";
+  "      \"SkipDocsGate\" -> False (True で docs 鮮度ゲートを無視して進む; OK 結果に StaleDocs 警告 + DocsGateSkipped)、\n" <>
+  "      \"AllowAckRemoval\" -> False (README の「## 謝辞」節が前回コミットから消えるコミットは Blocked。True で明示解除)。\n" <>
+  "戻り値: <|Status, Package, Proceed, (StaleDocs | AckLossFiles | Diff | CommitMessage), ...|>。";
 
 PackageCommit::usage =
   "PackageCommit[packageName, opts] は PackageCommitPlan を実行し、Status -> OK のとき\n" <>
@@ -267,7 +290,8 @@ PackageCommit::usage =
   "ときはコミットせず計画結果を返す。パッケージのメイン駆動関数。\n" <>
   "opts: \"DryRun\" -> True (既定。実コミットせず計画とメッセージ案を返す), \"MessageGenerator\" -> Automatic,\n" <>
   "      \"SkipDocsGate\" -> False (True は DryRun プレビュー専用でゲートを無視。実コミット (DryRun -> False) では\n" <>
-  "      SkipDocsGate に関わらず docs 古ければ Blocked で停止し StaleDocs を返す)。\n" <>
+  "      SkipDocsGate に関わらず docs 古ければ Blocked で停止し StaleDocs を返す)、\n" <>
+  "      \"AllowAckRemoval\" -> False (README の「## 謝辞」節が消えるコミットは Blocked。意図的削除時のみ True)。\n" <>
   "戻り値: <|Status (DryRun|Committed|Blocked|NoChange|Failed), Committed, CommitMessage, ...|>。";
 
 PackageLLMMessageGenerator::usage =
@@ -282,6 +306,21 @@ PackageLLMMessageGenerator::usage =
   "queryFn[prompt] が文字列を返さない / 空なら決定論メッセージにフォールバック。\n" <>
   "opts: \"MaxChars\"->80, \"IncludeContent\"->True, \"MaxContentChars\"->4000, \"MaxPerFileChars\"->1500。\n" <>
   "例: PackageCommit[\"github\",\"DryRun\"->False,\"MessageGenerator\"->PackageLLMMessageGenerator[$iModelSonnet]]。";
+
+$PackageCommitModel::usage =
+  "$PackageCommitModel は PackageCommit / PackageCommitPlan の既定コミットメッセージモデル。\n" <>
+  "既定 Automatic: claudecode がロード済みなら周囲の既定モデルで差分内容を要約した LLM メッセージを生成し、\n" <>
+  "  未ロード/失敗時は決定論的なファイル名列挙にフォールバックする。\n" <>
+  "特定モデルを使うにはモデル指定子 (tuple {provider,model} 例 $iModelSonnet、またはモデル名 String) か\n" <>
+  "  prompt->文字列 関数を代入する。None を代入すると LLM を呼ばず決定論メッセージに固定する。\n" <>
+  "再ロードで値を保持する。\n" <>
+  "例: $PackageCommitModel = $iModelSonnet; PackageCommit[\"claudecode\", \"DryRun\" -> True][\"CommitMessage\"]";
+
+PackageCommitDeletionPreview::usage =
+  "PackageCommitDeletionPreview[packageName] は DeleteMissing -> True で削除される\n" <>
+  "リモートファイル (リモート tree にあってローカルミラーに無い blob) を実行せずに列挙する。\n" <>
+  "読み取り専用。PackageCommit[..., \"DeleteMissing\" -> True] の前に必ず実行して確認すること。\n" <>
+  "返り値: <|\"WouldDelete\" -> {path..}, \"RemoteCount\", \"LocalCount\"|>。";
 
 
 Begin["`Private`"];
@@ -321,7 +360,13 @@ ClearAll[
   iTranslateToEnglishRepoName, iSlugifyRepoName, iCheckRepoExists,
   iParseGitHubURL, iRepoDBOwnerLookup,
   iIsRemotePackage, iOriginalsDir, iSaveOriginals, iLoadOriginals,
-  iRestoreOriginalsToRepo
+  iRestoreOriginalsToRepo,
+  iRetriableStatusQ, iRetriableCallQ, iRetryDelay,
+  iStatusDate, iLatestIncidentUpdate,
+  iMirrorBackupPath, iBackupMirror, iRestoreMirror, iDiscardMirrorBackup,
+  iWithMirrorRollback, iPruneMirrorBackupRoot, $iMirrorDiscardSuffix,
+  iMarkdownRealFrontMatterQ, iMarkdownHeadHazardQ, iNormalizeMarkdownFileHead,
+  iMarkdownUnclosedFenceQ, iSanitizeMirrorMarkdown
 ];
 
 iFailure[tag_String, msg_String, data_: <||>] :=
@@ -413,10 +458,34 @@ iParseBody[body_] := Which[
   True, body
 ];
 
+(* 5xx はサーバ側の一時障害 (GitHub 全体障害・単発の 503 等)。本文が処理されて
+   いないことが確定的なので、再送で回復しうる。 *)
+iRetriableStatusQ[status_] := IntegerQ[status] && MemberQ[{500, 502, 503, 504}, status];
+
+(* POST は一般に非冪等 (PR/Issue/リポジトリ作成が二重に走る) なので再試行しない。
+   例外は /git/ 系 = blob/tree/commit で、内容アドレス指定のため同じ本文を再送しても
+   同じ SHA が返るだけで重複が生じない。 *)
+iRetriableCallQ[method_String, path_String] :=
+  Module[{m = ToUpperCase[method]},
+    MemberQ[{"GET", "HEAD", "PUT", "PATCH", "DELETE"}, m] ||
+      (m === "POST" && StringContainsQ[path, "/git/"])
+  ];
+
+(* Retry-After があれば従う (上限 60 秒)。無ければ指数バックオフ。 *)
+iRetryDelay[resp_, k_Integer] :=
+  Module[{ra},
+    ra = Quiet @ Check[Lookup[Association[resp["Headers"]], "retry-after", None], None];
+    If[StringQ[ra] && StringMatchQ[ra, DigitCharacter ..],
+      Min[ToExpression[ra], 60],
+      2^k
+    ]
+  ];
+
 iAPICall[method_String, path_String, token_String, body_: None, query_: <||>] :=
   Module[{url, headers, reqAssoc, req, resp, status, rawBody, parsedBody, respHeaders,
-          maxRetries = 3, k},
+          maxRetries = 3, k, retriable},
     url = iBuildURL[path, query];
+    retriable = iRetriableCallQ[method, path];
     headers = Join[
       iDefaultHeaders[token],
       If[body === None, {}, {"Content-Type" -> "application/json; charset=utf-8"}]
@@ -428,12 +497,21 @@ iAPICall[method_String, path_String, token_String, body_: None, query_: <||>] :=
       ]
     ];
     req = HTTPRequest[url, reqAssoc];
-    (* リトライ付き URLRead (タイムアウト 120秒、最大 3 回) *)
+    (* リトライ付き URLRead (タイムアウト 120秒、最大 3 回)。
+       通信自体の失敗に加え、冪等な呼び出しに限り 5xx も再試行する。 *)
     resp = $Failed;
     Do[
       resp = Quiet @ Check[URLRead[req, TimeConstraint -> 120], $Failed];
-      If[resp =!= $Failed && !FailureQ[resp], Break[]];
-      If[k < maxRetries, Pause[2 * k]],
+      If[resp === $Failed || FailureQ[resp],
+        If[k < maxRetries, Pause[2 * k]];
+        Continue[]
+      ];
+      If[k < maxRetries && retriable &&
+          iRetriableStatusQ[Quiet @ Check[resp["StatusCode"], None]],
+        Pause[iRetryDelay[resp, k]];
+        Continue[]
+      ];
+      Break[],
       {k, 1, maxRetries}
     ];
     If[resp === $Failed || FailureQ[resp],
@@ -471,6 +549,105 @@ iAPICall[method_String, path_String, token_String, body_: None, query_: <||>] :=
         |>
       ]
     ]
+  ];
+
+(* ============================================================
+   GitHub 稼働状況 (2026-07-20)
+
+   5xx でコミットが失敗したとき、コード側の不具合か GitHub 側の障害かを
+   切り分けるための読み取り専用ユーティリティ。
+   参照先は Statuspage の公開 API (認証不要) で api.github.com ではない。
+   第三者ホストなので GitHub API トークンは絶対に送らない。
+   ============================================================ *)
+
+$GitHubStatusURL = "https://www.githubstatus.com/api/v2/summary.json";
+
+(* PackageCommit / GitHubCommit が依存するコンポーネント *)
+$GitHubCommitComponents = {"API Requests", "Git Operations"};
+
+iStatusDate[s_] := If[StringQ[s], Quiet @ Check[DateObject[s, TimeZone -> 0], s], s];
+
+(* incident_updates は新しい順。最新の本文だけ拾う。 *)
+iLatestIncidentUpdate[inc_] :=
+  Module[{ups},
+    ups = Lookup[inc, "incident_updates", {}];
+    If[ListQ[ups] && Length[ups] > 0,
+      Lookup[First[ups], "body", Missing["NotAvailable"]],
+      Missing["NotAvailable"]
+    ]
+  ];
+
+Options[GitHubServiceStatus] = {"Timeout" -> 20};
+
+GitHubServiceStatus[opts : OptionsPattern[]] :=
+  Module[{resp, raw, data, comps, compAssoc, degraded, incidents, indicator},
+    resp = Quiet @ Check[
+      URLRead[
+        HTTPRequest[$GitHubStatusURL,
+          <|"Method" -> "GET", "Headers" -> {"User-Agent" -> $GitHubUserAgent}|>],
+        TimeConstraint -> OptionValue["Timeout"]
+      ],
+      $Failed
+    ];
+    If[resp === $Failed || FailureQ[resp],
+      Return[iFailure["GitHubStatusUnavailable",
+        "GitHub 稼働状況ページに接続できませんでした。",
+        <|"URL" -> $GitHubStatusURL|>]]
+    ];
+    If[! (IntegerQ[resp["StatusCode"]] && 200 <= resp["StatusCode"] < 300),
+      Return[iFailure["GitHubStatusUnavailable",
+        "GitHub 稼働状況ページがエラーを返しました。",
+        <|"URL" -> $GitHubStatusURL, "StatusCode" -> resp["StatusCode"]|>]]
+    ];
+    raw = Quiet @ Check[resp["BodyByteArray"], None];
+    (* 日本語を含みうるので ImportByteArray 経由 (二重エンコード回避) *)
+    data = If[ByteArrayQ[raw],
+      Quiet @ Check[ImportByteArray[raw, "RawJSON"], $Failed],
+      $Failed];
+    If[! AssociationQ[data],
+      Return[iFailure["GitHubStatusParseFailed",
+        "GitHub 稼働状況の JSON を解釈できませんでした。",
+        <|"URL" -> $GitHubStatusURL|>]]
+    ];
+    comps = Lookup[data, "components", {}];
+    (* グループ見出し (group -> True) は実体が無いので除外 *)
+    comps = Select[comps,
+      AssociationQ[#] && ! TrueQ[Lookup[#, "group", False]] &];
+    compAssoc = Association[
+      (Lookup[#, "name", "?"] -> Lookup[#, "status", "unknown"]) & /@ comps];
+    degraded = Keys @ Select[compAssoc, # =!= "operational" &];
+    indicator = Lookup[Lookup[data, "status", <||>], "indicator", "unknown"];
+    incidents = Map[
+      <|
+        "Name" -> Lookup[#, "name", "?"],
+        "Status" -> Lookup[#, "status", "?"],
+        "Impact" -> Lookup[#, "impact", "?"],
+        "Started" -> iStatusDate[Lookup[#, "created_at", Missing["NotAvailable"]]],
+        "Updated" -> iStatusDate[Lookup[#, "updated_at", Missing["NotAvailable"]]],
+        "LatestUpdate" -> iLatestIncidentUpdate[#],
+        "URL" -> Lookup[#, "shortlink", Missing["NotAvailable"]]
+      |> &,
+      Select[Lookup[data, "incidents", {}], AssociationQ]
+    ];
+    <|
+      "Healthy" -> (indicator === "none" && degraded === {}),
+      "Indicator" -> indicator,
+      "Description" -> Lookup[Lookup[data, "status", <||>], "description", "?"],
+      (* コミット経路に効くコンポーネントだけを見た判定 *)
+      "CommitAffected" -> AnyTrue[$GitHubCommitComponents,
+        Lookup[compAssoc, #, "operational"] =!= "operational" &],
+      "Components" -> compAssoc,
+      "Degraded" -> degraded,
+      "Incidents" -> incidents,
+      "CheckedAt" -> Now,
+      "URL" -> "https://www.githubstatus.com/"
+    |>
+  ];
+
+GitHubServiceStatus[key_String, opts : OptionsPattern[]] :=
+  Module[{res},
+    res = GitHubServiceStatus[opts];
+    If[FailureQ[res], res, Lookup[res, key, Missing["KeyAbsent", key]]]
   ];
 
 iAccessToken[] :=
@@ -1080,10 +1257,16 @@ iMatchExcludePattern[relPath_String, patterns_List] :=
     ]
   ];
 
-(* マニフェストの有無に関わらず常に保護すべきデフォルト除外パターン *)
+(* マニフェストの有無に関わらず常に保護すべきデフォルト除外パターン。
+   2026-07-08: <pkg>_info/docs/docs/ を追加。過去の同期事故でリポジトリに
+   混入したネスト重複 (docs の中の docs/) が pull で毎回ローカル再生成され、
+   doc 更新の対象膨張 → push で再コミット、という永久ループの遮断。
+   このパターンは pull コピー・push スナップショット・stale 掃除の全経路に
+   効くため、リポジトリ側に残骸があってもローカルへは二度と入らない。 *)
 iDefaultExcludePatterns[packageName_String] := {
   iInfoDirName[packageName] <> "/history/",
-  iInfoDirName[packageName] <> "/references/"
+  iInfoDirName[packageName] <> "/references/",
+  iInfoDirName[packageName] <> "/docs/docs/"
 };
 
 (* マニフェストの excludePatterns にデフォルト保護パターンを統合 *)
@@ -1192,11 +1375,201 @@ iSyncReadme[packageName_String, localDir_String] :=
     ]
   ];
 
+(* ============================================================
+   Markdown 先頭 --- (擬似 YAML front matter) のコミット直前ガード (2026-08-02)
+
+   GitHub は .md の 1 行目が --- だと、そこから次の --- までを YAML front matter
+   としてパースする。生成ドキュメントは front matter を使わないので、先頭に ---
+   が 1 行残るだけで「1 行目 〜 次の水平線」が front matter 扱いになり、GitHub 上で
+   "Error in user YAML: mapping values are not allowed in this context" となって
+   本文全体が生テキスト表示になる (README/setup/examples 破損の実績あり)。
+
+   生成側 (claudecode.wl iNormalizeDocHead) でも除去しているが、手編集・旧世代の
+   ファイル・外部ワーカー経由の書き込みなど生成経路を通らない .md もあるため、
+   「GitHub へ出る唯一の関所」であるミラー refresh でも決定的に正規化する。
+
+   Claude Directives の rules/*.md や skills/*/SKILL.md は本物の front matter を
+   持つので壊してはならない。--- の直後の最初の非空行が key: 形式で、かつ閉じ ---
+   行が存在するものだけを「本物」として素通しする。
+   ============================================================ *)
+
+iMarkdownRealFrontMatterQ[content_String] :=
+  StringMatchQ[content,
+    RegularExpression[
+      "(?sm)[ \t]*-{3,}[ \t]*\r?\n(?:[ \t]*\r?\n)*[ \t]*[A-Za-z_][-A-Za-z0-9_.]*[ \t]*:" <>
+      "[^\r\n]*\r?\n.*?^-{3,}[ \t]*\r?$.*"]];
+iMarkdownRealFrontMatterQ[_] := False;
+
+(* 先頭が「単独 --- 行」で始まり、かつ本物の front matter ではない = 危険 *)
+iMarkdownHeadHazardQ[content_String] :=
+  Module[{s = StringReplace[content, RegularExpression["\\A\\s*"] -> "", 1]},
+    StringStartsQ[s, RegularExpression["-{3,}[ \t]*\r?\n"]] &&
+      !iMarkdownRealFrontMatterQ[s]
+  ];
+iMarkdownHeadHazardQ[_] := False;
+
+(* 危険な先頭 --- を除去して書き戻す。変更したときだけ True *)
+iNormalizeMarkdownFileHead[path_String] :=
+  Module[{content, fixed},
+    content = Quiet @ Check[Import[path, "Text", CharacterEncoding -> "UTF-8"], $Failed];
+    If[!StringQ[content] || !iMarkdownHeadHazardQ[content], Return[False]];
+    fixed = StringReplace[
+      StringReplace[content, RegularExpression["\\A\\s*"] -> "", 1],
+      RegularExpression["\\A-{3,}[ \t]*\r?\n\\s*"] -> "", 1];
+    If[fixed === content || StringTrim[fixed] === "", Return[False]];
+    TrueQ @ Quiet @ Check[
+      Export[path, fixed, "Text", CharacterEncoding -> "UTF-8"]; True, False]
+  ];
+iNormalizeMarkdownFileHead[_] := False;
+
+(* 末尾が開いたままのコードフェンス (``` が奇数) = 生成が途中で切れた兆候。
+   除去では直せないので警告のみ。以降のレンダリングが全部コードブロックになる。 *)
+iMarkdownUnclosedFenceQ[content_String] :=
+  OddQ @ Length @ Select[StringSplit[content, "\n"],
+    StringStartsQ[StringTrim[#, RegularExpression["[ \t]+"]], "```"] &];
+iMarkdownUnclosedFenceQ[_] := False;
+
+(* ミラー配下の全 .md を検査・正規化し、修正した相対パスのリストを返す *)
+iSanitizeMirrorMarkdown[localDir_String] :=
+  Module[{files, fixed = {}, unclosed = {}, rel},
+    If[!DirectoryQ[localDir], Return[{}]];
+    files = Quiet @ Check[FileNames["*.md", localDir, Infinity], {}];
+    Do[
+      rel = StringReplace[StringDrop[f, StringLength[localDir] + 1], "\\" -> "/"];
+      If[iNormalizeMarkdownFileHead[f], AppendTo[fixed, rel]];
+      If[TrueQ @ Quiet @ Check[
+          iMarkdownUnclosedFenceQ[Import[f, "Text", CharacterEncoding -> "UTF-8"]], False],
+        AppendTo[unclosed, rel]],
+      {f, files}
+    ];
+    If[Length[unclosed] > 0,
+      Print[Style[
+        "[GitHub] \:8b66\:544a: \:672a\:9589\:30b3\:30fc\:30c9\:30d5\:30a7\:30f3\:30b9 (``` \:304c\:5947\:6570) \:306e Markdown \:304c\:3042\:308a\:307e\:3059\:3002" <>
+        "\:751f\:6210\:304c\:9014\:4e2d\:3067\:5207\:308c\:305f\:53ef\:80fd\:6027\:304c\:9ad8\:304f\:3001GitHub \:3067\:672b\:5c3e\:304c\:5168\:90e8\:30b3\:30fc\:30c9\:8868\:793a\:306b\:306a\:308a\:307e\:3059: " <>
+        StringRiffle[unclosed, ", "], Orange]];
+      Print[Style[
+        "  \:203b ClaudeUpdateDocumentation \:3067\:5f53\:8a72\:30d5\:30a1\:30a4\:30eb\:3092\:518d\:751f\:6210\:3057\:3066\:304f\:3060\:3055\:3044\:3002", Gray]]
+    ];
+    If[Length[fixed] > 0,
+      Print[Style[
+        "[GitHub] Markdown \:5148\:982d\:306e\:64ec\:4f3c front matter (---) \:3092\:9664\:53bb\:3057\:307e\:3057\:305f: " <>
+        StringRiffle[fixed, ", "], Orange]];
+      Print[Style[
+        "  \:203b \:751f\:6210\:5143 ($packageDirectory \:5074) \:306e\:540c\:540d\:30d5\:30a1\:30a4\:30eb\:306b\:3082\:540c\:3058\:6b8b\:7559\:304c\:3042\:308b\:5834\:5408\:306f\:3001" <>
+        "\:6b21\:56de refresh \:3067\:518d\:5ea6\:4fee\:6b63\:3055\:308c\:307e\:3059\:3002", Gray]]
+    ];
+    fixed
+  ];
+iSanitizeMirrorMarkdown[_] := {};
+
 (* マニフェストに基づくグループリフレッシュの内部実装 *)
+(* ============================================================
+   ミラーのロールバック (2026-07-20)
+
+   iRefreshPackageGroup はソース → ミラー (GithubRepositories/<pkg>) を
+   コミット前に進める。コミットが失敗するとミラーだけが HEAD より先に進み、
+   「ミラー = 前回コミット状態」という不変条件が壊れる。
+   PackageCommitPlan のコミットメッセージはこのミラーとの差分から生成される
+   ため、次回実行時のメッセージが嘘になる (追加したファイルが「削除」になる等)。
+   → コミット失敗時はミラーを refresh 前の状態へ戻す。
+   ============================================================ *)
+
+iMirrorBackupPath[packageName_String] :=
+  FileNameJoin[{iPackageDirectory[], "GithubRepositories", "_mirror_rollback", packageName}];
+
+iBackupMirror[packageName_String, localDir_String] :=
+  Module[{dest},
+    If[!DirectoryQ[localDir], Return[None]];
+    dest = iMirrorBackupPath[packageName];
+    Quiet @ Check[
+      If[DirectoryQ[dest], DeleteDirectory[dest, DeleteContents -> True]];
+      (* 前回の復旧が中断して退避ディレクトリが残っていれば掃除する *)
+      If[DirectoryQ[localDir <> $iMirrorDiscardSuffix],
+        DeleteDirectory[localDir <> $iMirrorDiscardSuffix, DeleteContents -> True]];
+      iEnsureDirectory[DirectoryName[dest]];
+      CopyDirectory[localDir, dest];
+      dest,
+      None
+    ]
+  ];
+
+$iMirrorDiscardSuffix = ".rollback_discard";
+
+(* 復旧はコピーではなく移動で行う。
+   - バックアップが残らない (Windows/Dropbox では直後の DeleteDirectory が
+     ハンドル競合で失敗しがちで、数 MB のコピーが残留する)
+   - 大きなバイナリを二度コピーしない
+   進んだミラーは一旦退避してから差し替え、途中で失敗した場合は退避分を
+   戻すので、ミラーが消えたままにはならない。 *)
+iRestoreMirror[localDir_String, backup_] :=
+  Module[{dead, ok},
+    If[!StringQ[backup] || !DirectoryQ[backup], Return[False]];
+    dead = localDir <> $iMirrorDiscardSuffix;
+    Quiet @ Check[
+      If[DirectoryQ[dead], DeleteDirectory[dead, DeleteContents -> True]], Null];
+    ok = TrueQ @ Quiet @ Check[
+      If[DirectoryQ[localDir], RenameDirectory[localDir, dead]];
+      (* RenameDirectory はボリューム跨ぎで失敗する (LocalRepoPath を別ドライブに
+         指定した場合)。その時はコピーで復旧し、バックアップは明示的に消す。 *)
+      If[FailureQ[Quiet @ Check[RenameDirectory[backup, localDir], $Failed]],
+        CopyDirectory[backup, localDir];
+        iDiscardMirrorBackup[backup]
+      ];
+      DirectoryQ[localDir],
+      False
+    ];
+    If[!ok,
+      (* 差し替え失敗: 退避した (進んだ) ミラーを元に戻して諦める *)
+      Quiet @ Check[
+        If[DirectoryQ[dead] && !DirectoryQ[localDir], RenameDirectory[dead, localDir]],
+        Null];
+      Return[False]
+    ];
+    Quiet @ Check[
+      If[DirectoryQ[dead], DeleteDirectory[dead, DeleteContents -> True]], Null];
+    True
+  ];
+
+iDiscardMirrorBackup[backup_] :=
+  If[StringQ[backup] && DirectoryQ[backup],
+    TrueQ @ Quiet @ Check[DeleteDirectory[backup, DeleteContents -> True]; True, False],
+    False
+  ];
+
+(* 空になった _mirror_rollback 置き場を残さない *)
+iPruneMirrorBackupRoot[] :=
+  Module[{root},
+    root = FileNameJoin[{iPackageDirectory[], "GithubRepositories", "_mirror_rollback"}];
+    If[DirectoryQ[root] && FileNames["*", root] === {},
+      TrueQ @ Quiet @ Check[DeleteDirectory[root]; True, False],
+      False
+    ]
+  ];
+
+(* refresh + commit を包み、失敗時にミラーを巻き戻す。
+   body は refresh 結果とコミット結果を順に返す HoldForm 不要の関数として渡す。 *)
+iWithMirrorRollback[packageName_String, localDir_String, body_] :=
+  Module[{backup, result, restored},
+    backup = iBackupMirror[packageName, localDir];
+    result = body[];
+    If[FailureQ[result],
+      restored = iRestoreMirror[localDir, backup];
+      iDiscardMirrorBackup[backup];
+      iPruneMirrorBackupRoot[];
+      Return[Replace[result,
+        Failure[tag_, assoc_Association] :>
+          Failure[tag, Append[assoc, "MirrorRestored" -> restored]]
+      ]]
+    ];
+    iDiscardMirrorBackup[backup];
+    iPruneMirrorBackupRoot[];
+    result
+  ];
+
 iRefreshPackageGroup[packageName_String, localDir_String] :=
   Module[{manifest, pkgDir, copiedFiles = {}, copiedDirs = {}, excludePatterns,
           deletedFiles = {}, deletedDirFiles = {},
-          src, dst, readmeResult, restoredOriginals},
+          src, dst, readmeResult, restoredOriginals, mdHeadFixed},
     manifest = iEnsureManifest[packageName];
     pkgDir = iPackageDirectory[];
     excludePatterns = iMergedExcludePatterns[packageName];
@@ -1231,6 +1604,9 @@ iRefreshPackageGroup[packageName_String, localDir_String] :=
     restoredOriginals = iRestoreOriginalsToRepo[packageName, localDir];
     (* README.md の同期 *)
     readmeResult = iSyncReadme[packageName, localDir];
+    (* コミット直前ガード: GitHub が YAML front matter と誤認する先頭 --- を除去。
+       README 同期の後に走らせ、docs/README.md とトップ README.md の両方を掃除する *)
+    mdHeadFixed = iSanitizeMirrorMarkdown[localDir];
     <|
       "Package" -> packageName,
       "LocalRepoPath" -> localDir,
@@ -1240,7 +1616,8 @@ iRefreshPackageGroup[packageName_String, localDir_String] :=
       "DeletedFiles" -> deletedFiles,
       "DeletedDirFiles" -> deletedDirFiles,
       "RestoredOriginals" -> restoredOriginals,
-      "READMESynced" -> readmeResult
+      "READMESynced" -> readmeResult,
+      "MarkdownHeadFixed" -> mdHeadFixed
     |>
   ];
 
@@ -1843,18 +2220,16 @@ Options[GitHubRefreshAndCommit] = {
 };
 
 GitHubRefreshAndCommit[packageName_String, message_String, opts : OptionsPattern[]] :=
-  Module[{localDir, refreshResult, commitResult},
+  Module[{localDir, refreshResult, commitResult, commitOpts},
     (* Fallback オプションを $currentUseFallback に反映 *)
     If[TrueQ[OptionValue[Fallback]],
       ClaudeCode`Private`$currentUseFallback = True];
     localDir = GitHubEnsureLocalRepo[packageName, LocalRepoPath -> OptionValue[LocalRepoPath]];
     (* ExtraDirectories が指定されていれば manifest に永続追加 *)
     iAddExtraDirectories[packageName, OptionValue[ExtraDirectories]];
-    refreshResult = iRefreshPackageGroup[packageName, localDir];
-    If[FailureQ[refreshResult], Return[refreshResult]];
-    commitResult = GitHubCommit[
-      packageName,
-      message,
+    (* OptionValue は定義の RHS でのみ解決されるため、遅延評価される
+       クロージャに入れる前にここで値を確定させる。 *)
+    commitOpts = {
       Owner -> OptionValue[Owner],
       Repository -> OptionValue[Repository],
       Branch -> OptionValue[Branch],
@@ -1866,6 +2241,16 @@ GitHubRefreshAndCommit[packageName_String, message_String, opts : OptionsPattern
       Force -> OptionValue[Force],
       Author -> OptionValue[Author],
       Committer -> OptionValue[Committer]
+    };
+    (* refresh はミラーを先に進めるので、コミット失敗時は巻き戻す *)
+    commitResult = iWithMirrorRollback[packageName, localDir,
+      Function[
+        refreshResult = iRefreshPackageGroup[packageName, localDir];
+        If[FailureQ[refreshResult],
+          refreshResult,
+          GitHubCommit[packageName, message, Sequence @@ commitOpts]
+        ]
+      ]
     ];
     If[FailureQ[commitResult], Return[commitResult]];
     Join[
@@ -1894,17 +2279,15 @@ Options[GitHubSubmitPullRequest] = {
 };
 
 GitHubSubmitPullRequest[packageName_String, title_String, message_String, opts : OptionsPattern[]] :=
-  Module[{branch, localDir, refreshResult, commitResult, prResult},
+  Module[{branch, localDir, refreshResult, commitResult, prResult, commitOpts},
     branch = Replace[
       OptionValue[Branch],
       Automatic :> iAutoPRBranchName[packageName, title]
     ];
     localDir = GitHubEnsureLocalRepo[packageName, LocalRepoPath -> OptionValue[LocalRepoPath]];
-    refreshResult = iRefreshPackageGroup[packageName, localDir];
-    If[FailureQ[refreshResult], Return[refreshResult]];
-    commitResult = GitHubCommit[
-      packageName,
-      message,
+    (* OptionValue は定義の RHS でのみ解決されるため、遅延評価される
+       クロージャに入れる前にここで値を確定させる。 *)
+    commitOpts = {
       Owner -> OptionValue[Owner],
       Repository -> OptionValue[Repository],
       Branch -> branch,
@@ -1916,6 +2299,16 @@ GitHubSubmitPullRequest[packageName_String, title_String, message_String, opts :
       Force -> OptionValue[Force],
       Author -> OptionValue[Author],
       Committer -> OptionValue[Committer]
+    };
+    (* refresh はミラーを先に進めるので、コミット失敗時は巻き戻す *)
+    commitResult = iWithMirrorRollback[packageName, localDir,
+      Function[
+        refreshResult = iRefreshPackageGroup[packageName, localDir];
+        If[FailureQ[refreshResult],
+          refreshResult,
+          GitHubCommit[packageName, message, Sequence @@ commitOpts]
+        ]
+      ]
     ];
     If[FailureQ[commitResult], Return[commitResult]];
     prResult = GitHubCreatePullRequest[
@@ -2675,6 +3068,87 @@ GitHubListCommits[packageName_String, opts:OptionsPattern[]] :=
     Take[commits, UpTo[maxN]]
   ];
 
+(* ── コミット履歴のコンパクト取得 (読み取り専用・承認不要) ──────
+   GithubRepositories/<packageName> は REST API 同期のミラーフォルダで
+   .git を持たない (ローカル git 履歴は存在しない)。コミット履歴の正本は
+   GitHub 上にあるため、GitHubListCommits と同じ API GET を日付範囲
+   (since/until) 付きで呼び、LLM が扱いやすいコンパクト形式で返す。
+   リポジトリを一切変更しない読み取り操作なので、「いつ何が追加されたか」
+   「6/20 以降の変更は?」のような質問に承認なしで答えられるよう、
+   ファイル末尾で NBAccess`$NBTrustedPackageHeads に登録する。 *)
+
+(* 日付指定の正規化: GitHub API の since/until は ISO 8601 (UTC) を要求。
+   DateObject または日付文字列を "yyyy-MM-ddTHH:mm:ssZ" へ変換する。
+   不正な入力は $Failed。 *)
+iGHLogISODate[None] := None;
+iGHLogISODate[Automatic] := None;
+iGHLogISODate[d_DateObject] :=
+  Quiet @ Check[
+    DateString[DateObject[AbsoluteTime[d], TimeZone -> 0],
+      "ISODateTime"] <> "Z", $Failed];
+iGHLogISODate[s_String] :=
+  Module[{d},
+    If[s === "" || !StringMatchQ[s,
+        (DigitCharacter | "-" | "/" | ":" | "T" | "Z" | " " | "." | "+")..],
+      Return[$Failed]];
+    d = Quiet @ Check[DateObject[s], $Failed];
+    If[DateObjectQ[d], iGHLogISODate[d], $Failed]];
+iGHLogISODate[_] := $Failed;
+
+Options[GitHubCommitLog] = {
+  Owner -> Automatic, Repository -> Automatic,
+  Branch -> Automatic, BaseBranch -> Automatic,
+  MaxItems -> 50,
+  "Since" -> None, "Until" -> None,
+  Fallback -> False
+};
+
+GitHubCommitLog[packageName_String, opts:OptionsPattern[]] :=
+  Module[{token, owner, repo, baseBranch, branch, maxN, since, until,
+          params, resp, commits},
+    since = iGHLogISODate[OptionValue["Since"]];
+    until = iGHLogISODate[OptionValue["Until"]];
+    If[since === $Failed || until === $Failed,
+      Return[Failure["GitHubCommitLog",
+        <|"MessageTemplate" ->
+            "Since/Until は \"2026-06-20\" 形式の文字列か DateObject で指定してください"|>]]];
+    token = iAccessToken[];
+    If[FailureQ[token], Return[token]];
+    owner = iResolveOwner[token, OptionValue[Owner], packageName];
+    If[FailureQ[owner], Return[owner]];
+    If[TrueQ[OptionValue[Fallback]],
+      ClaudeCode`Private`$currentUseFallback = True];
+    repo = iResolveRepository[packageName, OptionValue[Repository]];
+    If[FailureQ[repo], Return[repo]];
+    baseBranch = iResolveBaseBranch[token, owner, repo,
+      OptionValue[BaseBranch]];
+    If[FailureQ[baseBranch], Return[baseBranch]];
+    branch = iResolveBranch[OptionValue[Branch], baseBranch];
+    maxN = Min[Replace[OptionValue[MaxItems],
+      Except[_Integer?Positive] -> 50], 300];
+    params = <|"sha" -> branch, "per_page" -> Min[maxN, 100]|>;
+    If[StringQ[since], params["since"] = since];
+    If[StringQ[until], params["until"] = until];
+    resp = iAPICall["GET",
+      "repos/" <> owner <> "/" <> repo <> "/commits",
+      token, None, params];
+    If[FailureQ[resp], Return[resp]];
+    commits = resp["Body"];
+    If[!ListQ[commits], Return[{}]];
+    Map[Function[c,
+      Module[{cm = Lookup[c, "commit", <||>], au},
+        au = Lookup[cm, "author", <||>];
+        If[!AssociationQ[au], au = <||>];
+        <|"SHA" -> Lookup[c, "sha", ""],
+          "Date" -> Quiet @ Check[
+            DateObject[Lookup[au, "date", ""]], Lookup[au, "date", ""]],
+          "Author" -> Lookup[au, "name", ""],
+          "Message" -> First[StringSplit[
+            Replace[Lookup[cm, "message", ""], Except[_String] -> ""],
+            "\n"], ""]|>]],
+      Take[commits, UpTo[maxN]]]
+  ];
+
 (* コミットメッセージを短縮表示 *)
 iTruncateCommitMsg[msg_String, maxLen_Integer:40] :=
   Module[{firstLine},
@@ -3294,29 +3768,61 @@ iPACPackageDirectory[] := Module[{dir},
 (* api ドキュメント 1 件 -> 対応 .wl のペア情報を構築する。
    api.md       -> <pkg>.wl
    api_<sfx>.md -> <pkg>_<sfx>.wl *)
-iPACApiWlPair[pkg_String, srcDir_String, docPath_String] := Module[
-  {base, wl, wlPath, docExists, wlExists},
+iPACApiWlPair[pkg_String, srcDir_String, docsDir_String, docPath_String] := Module[
+  {base, sfx, wl, wlPath, docExists, wlExists},
   base = FileBaseName[docPath];   (* "api" | "api_core" | ... *)
+  sfx = If[base === "api", None, StringDrop[base, StringLength["api_"]]];  (* 補助名 or None *)
   wl = If[base === "api",
     pkg <> ".wl",
-    pkg <> "_" <> StringDrop[base, StringLength["api_"]] <> ".wl"];
+    pkg <> "_" <> sfx <> ".wl"];
   wlPath = FileNameJoin[{srcDir, wl}];
   docExists = FileExistsQ[docPath];
   wlExists = FileExistsQ[wlPath];
   <|
     "Doc" -> FileNameTake[docPath], "DocPath" -> docPath,
     "Wl" -> wl, "WlPath" -> wlPath, "WlExists" -> wlExists,
+    "AuxName" -> sfx, "DocsDir" -> docsDir,
     "DocDate" -> If[docExists, FileDate[docPath, "Modification"], Missing["NoFile"]],
     "WlDate" -> If[wlExists, FileDate[wlPath, "Modification"], Missing["NoFile"]]
   |>
 ];
 
-(* doc が対応 .wl より古ければ stale (= .wl 更新後に doc が未更新)。
-   両方が実日付で、かつ厳密に doc < wl のときだけ stale。 *)
-iPACDocStaleQ[pair_Association] := Module[{dd, wd},
+(* 補助ソースの内容ハッシュ。claudecode.wl の iAuxSourceHash と同一式でなければ照合できない
+   (Import Text -> \r 除去 -> Hash -> 36 進)。ハッシュ機構を変える場合は両方を揃えること。 *)
+iPACAuxSourceHash[wlPath_String] := Module[{txt = Quiet @ Check[Import[wlPath, "Text"], $Failed]},
+  If[!StringQ[txt], $Failed, IntegerString[Hash[StringDelete[txt, "\r"]], 36]]];
+
+(* claudecode が doc 生成時に記録する docsDir/.aux_source_hashes.json を読む (auxName -> hash) *)
+iPACAuxHashRead[docsDir_String] := Module[
+  {p = FileNameJoin[{docsDir, ".aux_source_hashes.json"}], j},
+  If[!FileExistsQ[p], Return[<||>]];
+  j = Quiet @ Check[Developer`ReadRawJSONString[Import[p, "Text"]], <||>];
+  If[AssociationQ[j], j, <||>]];
+
+(* 従来の mtime 基準: doc が対応 .wl より古ければ stale。両方が実日付で doc < wl のときのみ。 *)
+iPACDocStaleMtimeQ[pair_Association] := Module[{dd, wd},
   dd = pair["DocDate"]; wd = pair["WlDate"];
   MatchQ[dd, _DateObject] && MatchQ[wd, _DateObject] &&
     AbsoluteTime[dd] < AbsoluteTime[wd]
+];
+
+(* stale 判定: 補助ソースの内容ハッシュが記録済みなら内容基準で判定し、Dropbox 同期等による
+   mtime の揺れ (内容不変でも mtime が進む) を無視する。ClaudeUpdateDocumentation の
+   iIsAuxApiFresh と同じ基準に揃え、DocsGate と doc 更新側の齟齬を防ぐ。
+   記録ハッシュ == 現 .wl 内容ハッシュ → up-to-date、異なる → stale。
+   キー: api.md 本体 → 予約キー "@main" (主ソース <pkg>.wl)、api_<aux>.md → auxName。
+   ClaudeUpdateDocumentation が doc 生成成功時と「最新です」判定時に同じサイドカーへ記録する。
+   未記録 (まだ doc 生成/判定していない) や内容が読めない場合のみ mtime にフォールバック。 *)
+iPACDocStaleQ[pair_Association] := Module[
+  {auxName = Lookup[pair, "AuxName", None], docsDir = Lookup[pair, "DocsDir", None],
+   key, storedHash, curHash},
+  If[!StringQ[docsDir], Return[iPACDocStaleMtimeQ[pair]]];
+  key = If[auxName === None, "@main", auxName];   (* api.md 本体は主ソースを "@main" で照合 *)
+  storedHash = Lookup[iPACAuxHashRead[docsDir], key, None];
+  If[storedHash === None, Return[iPACDocStaleMtimeQ[pair]]];
+  curHash = iPACAuxSourceHash[pair["WlPath"]];
+  If[!StringQ[curHash], Return[iPACDocStaleMtimeQ[pair]]];
+  storedHash =!= curHash
 ];
 
 PackageDocsFreshnessGate[pkg_String] := Module[
@@ -3331,7 +3837,7 @@ PackageDocsFreshnessGate[pkg_String] := Module[
       "StaleDocs" -> {}, "Checked" -> 0, "DocsDir" -> docsDir,
       "Reason" -> "docs フォルダが無い (検査対象なし)"|>]];
   apiDocs = FileNames[{"api.md", "api_*.md"}, docsDir];
-  pairs = iPACApiWlPair[pkg, srcDir, #] & /@ apiDocs;
+  pairs = iPACApiWlPair[pkg, srcDir, docsDir, #] & /@ apiDocs;
   checked = Select[pairs, TrueQ[#["WlExists"]] &];  (* 対応 .wl が在るものだけ検査 *)
   stale = Select[checked, iPACDocStaleQ];
   <|
@@ -3413,7 +3919,8 @@ PackageCommitDiff[pkg_String] := Module[
         ! FileExistsQ[srcP],
           If[FileExistsQ[snapP], AppendTo[removed, rel]],
         ! FileExistsQ[snapP],
-          AppendTo[added, rel]; AppendTo[copiedRel, rel],
+          AppendTo[added, rel]; AppendTo[copiedRel, rel];
+          AppendTo[changedDetail, <|"Rel" -> rel, "Src" -> srcP, "Snap" -> snapP|>],
         iPACSameContent[srcP, snapP],
           unchanged++; AppendTo[copiedRel, rel],
         True,
@@ -3433,7 +3940,8 @@ PackageCommitDiff[pkg_String] := Module[
               snapP = FileNameJoin[Flatten[{snapDir, FileNameSplit[rel]}]];
               AppendTo[copiedRel, rel];
               Which[
-                ! FileExistsQ[snapP], AppendTo[added, rel],
+                ! FileExistsQ[snapP], AppendTo[added, rel];
+                  AppendTo[changedDetail, <|"Rel" -> rel, "Src" -> f, "Snap" -> snapP|>],
                 iPACSameContent[f, snapP], unchanged++,
                 True, AppendTo[changed, rel];
                   AppendTo[changedDetail, <|"Rel" -> rel, "Src" -> f, "Snap" -> snapP|>]]]],
@@ -3491,18 +3999,78 @@ iPACDefaultMessage[diff_Association] := Module[{a, c, r, parts},
   StringRiffle[parts, "、"]
 ];
 
-(* MessageGenerator の解決: Automatic=決定論、String=固定文、Function=diff を渡す。 *)
+(* 既定コミットメッセージモデル。
+   Automatic (既定) = claudecode がロード済みなら周囲の既定モデル ($ClaudeModel) で差分内容を
+     要約した LLM メッセージを生成、未ロード/失敗時は決定論メッセージへフォールバック。
+   モデル指定子/関数を代入すればそれを使用。None を代入すると LLM を呼ばず決定論に固定。
+   再ロード保持。 *)
+If[! ValueQ[$PackageCommitModel], $PackageCommitModel = Automatic];
+
+(* claudecode がロード済み (ClaudeQueryBg に定義あり) なら周囲の既定モデルで LLM を呼ぶ
+   queryFn を返す。無ければ None (= 決定論フォールバック)。 *)
+iPACAutoQueryFn[] := If[
+  Length[Names["ClaudeCode`ClaudeQueryBg"]] > 0 &&
+    Length[DownValues[ClaudeCode`ClaudeQueryBg]] > 0,
+  With[{qbg = ClaudeCode`ClaudeQueryBg}, Function[p, qbg[p]]],
+  None];
+
+(* LLM 生成を試み、非文字列/空/失敗なら決定論へフォールバック。 *)
+iPACTryLLMMessage[genSpec_, diff_Association] := Module[
+  {m = Quiet @ Check[PackageLLMMessageGenerator[genSpec][diff], $Failed]},
+  If[StringQ[m] && StringTrim[m] =!= "", m, iPACDefaultMessage[diff]]];
+
+(* MessageGenerator の解決。
+   明示 String=固定文 / 明示 Function 等=そのまま diff を渡す。
+   Automatic は $PackageCommitModel で分岐:
+     None=決定論固定 / モデル指定子=そのモデルで LLM / Automatic=周囲の既定モデル (無ければ決定論)。 *)
 iPACResolveMessage[gen_, diff_Association] := Which[
-  gen === Automatic, iPACDefaultMessage[diff],
   StringQ[gen], gen,
-  True, Module[{m = Quiet @ Check[gen[diff], $Failed]},
-    If[StringQ[m], m, iPACDefaultMessage[diff]]]
+  gen =!= Automatic,
+    Module[{m = Quiet @ Check[gen[diff], $Failed]},
+      If[StringQ[m] && StringTrim[m] =!= "", m, iPACDefaultMessage[diff]]],
+  $PackageCommitModel === None, iPACDefaultMessage[diff],
+  $PackageCommitModel =!= Automatic, iPACTryLLMMessage[$PackageCommitModel, diff],
+  True,
+    Module[{qf = iPACAutoQueryFn[]},
+      If[qf === None, iPACDefaultMessage[diff], iPACTryLLMMessage[qf, diff]]]
 ];
 
-Options[PackageCommitPlan] = {"MessageGenerator" -> Automatic, "SkipDocsGate" -> False};
+(* === 謝辞保全ゲート (2026-07-18) ===
+   2026-07-16 に claudecode README の「## 謝辞」節がドキュメント再生成で消えたまま
+   コミットされた事故の再発防止。前回コミット (スナップショット) に謝辞がある README が
+   謝辞なしで上書き/削除されるコミットは公開境界で Blocked にする (fail-closed)。 *)
+
+(* ファイルに「## 謝辞」節見出しが含まれるか (UTF-8 バイト読みで判定) *)
+iPACHasAckSection[path_String] :=
+  FileExistsQ[path] &&
+    StringContainsQ[
+      StringReplace[
+        Quiet @ Check[ByteArrayToString[ReadByteArray[path], "UTF-8"], ""],
+        "\r\n" -> "\n"],
+      RegularExpression["(?m)^##[ \t]+謝辞[ \t]*$"]];
+iPACHasAckSection[_] := False;
+
+(* 差分中で謝辞が失われる README の Rel リスト (変更で消える + ファイルごと削除) *)
+iPACAckLossFiles[diff_Association] := Module[
+  {det, snapDir, removed, lossChanged, lossRemoved},
+  det = Replace[Lookup[diff, "ChangedDetail", {}], Except[_List] -> {}];
+  lossChanged = Cases[det,
+    d_Association /; FileNameTake[Lookup[d, "Rel", ""]] === "README.md" &&
+      iPACHasAckSection[Lookup[d, "Snap", ""]] &&
+      ! iPACHasAckSection[Lookup[d, "Src", ""]] :> Lookup[d, "Rel", ""]];
+  snapDir = Lookup[diff, "SnapshotDir", ""];
+  removed = Replace[Lookup[diff, "Removed", {}], Except[_List] -> {}];
+  lossRemoved = Select[removed,
+    FileNameTake[#] === "README.md" && StringQ[snapDir] && snapDir =!= "" &&
+      iPACHasAckSection[FileNameJoin[Flatten[{snapDir, FileNameSplit[#]}]]] &];
+  DeleteDuplicates[Join[lossChanged, lossRemoved]]
+];
+
+Options[PackageCommitPlan] = {"MessageGenerator" -> Automatic, "SkipDocsGate" -> False,
+  "AllowAckRemoval" -> False};
 
 PackageCommitPlan[pkg_String, OptionsPattern[]] := Module[
-  {gate, diff, msg, skipGate, gateProceed, staleWarn},
+  {gate, diff, msg, skipGate, gateProceed, staleWarn, ackLoss},
   skipGate = TrueQ[OptionValue["SkipDocsGate"]];
   gate = PackageDocsFreshnessGate[pkg];
   If[Lookup[gate, "Status", ""] === "Failed",
@@ -3522,6 +4090,17 @@ PackageCommitPlan[pkg_String, OptionsPattern[]] := Module[
   If[Lookup[diff, "ChangeCount", 0] === 0,
     Return[<|"Status" -> "NoChange", "Package" -> pkg, "Proceed" -> False,
       "Reason" -> "差分なし (コミット対象なし)", "Diff" -> diff|>]];
+  (* 謝辞保全ゲート: README の「## 謝辞」節が前回コミットから失われるコミットを拒否。
+     解除は明示 "AllowAckRemoval" -> True のみ (SkipDocsGate では解除されない)。 *)
+  If[! TrueQ[OptionValue["AllowAckRemoval"]],
+    ackLoss = iPACAckLossFiles[diff];
+    If[Length[ackLoss] > 0,
+      Return[<|"Status" -> "Blocked", "Package" -> pkg, "Proceed" -> False,
+        "Reason" -> "AckLoss (前回コミットにある README の「## 謝辞」節が消えています: " <>
+          StringRiffle[ackLoss, ", "] <>
+          ")。謝辞の削除は禁止。docs/README.md と doc_options.json の Acknowledgments を復元してください。" <>
+          "意図的な削除の場合のみ \"AllowAckRemoval\" -> True を明示指定。",
+        "AckLossFiles" -> ackLoss, "Diff" -> diff|>]]];
   msg = iPACResolveMessage[OptionValue["MessageGenerator"], diff];
   <|"Status" -> "OK", "Package" -> pkg, "Proceed" -> True,
     "StaleDocs" -> staleWarn, "DocsGateSkipped" -> (skipGate && ! gateProceed),
@@ -3536,12 +4115,20 @@ PackageCommit::staledocs =
   "`1` は api ドキュメント (`2`) が対応 .wl より古いため、実コミットを停止しました。" <>
   "ドキュメントを更新してから再実行するか、確認だけなら DryRun + SkipDocsGate -> True を使ってください。";
 
+PackageCommit::ackloss =
+  "`1` のコミットで README の「## 謝辞」節が失われるため停止しました (`2`)。" <>
+  "docs/README.md と doc_options.json の Acknowledgments を復元してください。" <>
+  "意図的な削除の場合のみ \"AllowAckRemoval\" -> True を明示指定してください。";
+
 (* 非コミット結果 (Blocked/NoChange/Failed) の CommitMessage を意味のある Missing にする。
    KeyAbsent ではなく理由付き Missing を返し、誤って実メッセージと混同しないようにする。 *)
 iPACNoCommitMessage[status_, pkg_String, plan_Association] := Switch[status,
   "Blocked",
-    Missing["StaleDocs", pkg <> ": docs (api*.md) が対応 .wl より古いため停止。" <>
-      "更新するか、DryRun + SkipDocsGate -> True でメッセージ案を確認してください。"],
+    If[Length[Lookup[plan, "AckLossFiles", {}]] > 0,
+      Missing["AckLoss", ToString @ Lookup[plan, "Reason",
+        pkg <> ": README の「## 謝辞」節が失われるため停止。"]],
+      Missing["StaleDocs", pkg <> ": docs (api*.md) が対応 .wl より古いため停止。" <>
+        "更新するか、DryRun + SkipDocsGate -> True でメッセージ案を確認してください。"]],
   "NoChange",
     Missing["NoChange", pkg <> ": 前回コミットからの差分がありません (コミット対象なし)。"],
   "Failed",
@@ -3551,7 +4138,13 @@ iPACNoCommitMessage[status_, pkg_String, plan_Association] := Switch[status,
 ];
 
 Options[PackageCommit] = {"DryRun" -> True, "MessageGenerator" -> Automatic,
-  "SkipDocsGate" -> False};
+  "SkipDocsGate" -> False, "AllowAckRemoval" -> False,
+  (* 2026-07-08: リモート残骸掃除用に GitHubRefreshAndCommit へ転送。
+     削除対象 = リモートにあってミラーに無いもの全部なので、実行前に
+     PackageCommitDeletionPreview[pkg] で削除候補を必ず確認すること。
+     除外パターン保護されたミラー内ファイル (docs/docs 等) は先にミラーから
+     手動削除しないとツリーに残り続けて削除されない点に注意。 *)
+  "DeleteMissing" -> False};
 
 PackageCommit[pkg_String, OptionsPattern[]] := Module[
   {dry, skipGate, plan, res},
@@ -3560,10 +4153,19 @@ PackageCommit[pkg_String, OptionsPattern[]] := Module[
   (* SkipDocsGate は DryRun プレビュー専用。実コミット (DryRun -> False) では
      SkipDocsGate に関わらず docs 鮮度ゲートを必ず適用する。 *)
   plan = PackageCommitPlan[pkg, "MessageGenerator" -> OptionValue["MessageGenerator"],
-    "SkipDocsGate" -> (skipGate && dry)];
+    "SkipDocsGate" -> (skipGate && dry),
+    "AllowAckRemoval" -> TrueQ[OptionValue["AllowAckRemoval"]]];
   (* OK 以外 (Blocked / NoChange / Failed) はコミットしない *)
   If[Lookup[plan, "Status", ""] =!= "OK",
     Module[{st = Lookup[plan, "Status", ""], stale = Lookup[plan, "StaleDocs", {}]},
+      (* 謝辞保全ゲートで Blocked: AckLoss 専用の警告を出して停止 (DryRun でも実コミットでも)。 *)
+      If[st === "Blocked" && Length[Lookup[plan, "AckLossFiles", {}]] > 0,
+        Message[PackageCommit::ackloss, pkg,
+          StringRiffle[Lookup[plan, "AckLossFiles", {}], ", "]];
+        Return[<|"Status" -> "Blocked", "Package" -> pkg, "Committed" -> False,
+          "CommitMessage" -> iPACNoCommitMessage["Blocked", pkg, plan],
+          "Reason" -> Lookup[plan, "Reason", "AckLoss"],
+          "AckLossFiles" -> Lookup[plan, "AckLossFiles", {}]|>]];
       (* 実コミット要求が docs 古さで Blocked: 警告メッセージを出して停止 (実コミットでは SkipDocsGate 無効)。 *)
       If[! dry && st === "Blocked",
         Message[PackageCommit::staledocs, pkg,
@@ -3583,7 +4185,8 @@ PackageCommit[pkg_String, OptionsPattern[]] := Module[
       "DocsGateSkipped" -> Lookup[plan, "DocsGateSkipped", False],
       "StaleDocs" -> Lookup[plan, "StaleDocs", {}],
       "Note" -> "DryRun -> False で実コミット (GitHubRefreshAndCommit) を実行。"|>]];
-  res = GitHubRefreshAndCommit[pkg, plan["CommitMessage"]];
+  res = GitHubRefreshAndCommit[pkg, plan["CommitMessage"],
+    DeleteMissing -> TrueQ[OptionValue["DeleteMissing"]]];
   <|"Status" -> If[FailureQ[res], "Failed", "Committed"], "Package" -> pkg,
     "Committed" -> ! FailureQ[res], "CommitMessage" -> plan["CommitMessage"],
     "DocsGateSkipped" -> Lookup[plan, "DocsGateSkipped", False],
@@ -3594,6 +4197,48 @@ PackageCommit[pkg_String, OptionsPattern[]] := Module[
 PackageCommit[___] :=
   <|"Status" -> "Failed",
     "Reason" -> "PackageCommit[packageName_String, opts] を期待。"|>;
+
+(* DeleteMissing の削除候補を実行せずに列挙する (2026-07-08)。
+   GitHubCommit の DeleteMissing 計算 (remote tree − ローカルミラー) と
+   同じ式を読み取り専用で再現する。ミラーには手を触れない。 *)
+PackageCommitDeletionPreview[packageName_String] := Module[
+  {token, owner, repo, baseBranch, ref, headSHA, commitObj, baseTreeSHA,
+   remoteTree, remotePaths, localDir, localPaths},
+  token = iAccessToken[]; If[FailureQ[token], Return[token]];
+  owner = iResolveOwner[token, Automatic, packageName];
+  If[FailureQ[owner], Return[owner]];
+  repo = iResolveRepository[packageName, Automatic];
+  If[FailureQ[repo], Return[repo]];
+  baseBranch = iResolveBaseBranch[token, owner, repo, Automatic];
+  If[FailureQ[baseBranch], Return[baseBranch]];
+  ref = iWaitForRef[token, owner, repo, baseBranch];
+  If[FailureQ[ref], Return[ref]];
+  headSHA = Lookup[Lookup[ref["Body"], "object", <||>], "sha", Missing[]];
+  If[! StringQ[headSHA],
+    Return[iFailure["MissingHeadSHA", "head SHA を取得できませんでした。", <||>]]];
+  commitObj = iGetCommitObject[token, owner, repo, headSHA];
+  If[FailureQ[commitObj], Return[commitObj]];
+  baseTreeSHA = Lookup[Lookup[commitObj["Body"], "tree", <||>], "sha", Missing[]];
+  If[! StringQ[baseTreeSHA],
+    Return[iFailure["MissingBaseTreeSHA", "tree SHA を取得できませんでした。", <||>]]];
+  remoteTree = iGetTreeRecursive[token, owner, repo, baseTreeSHA];
+  If[FailureQ[remoteTree], Return[remoteTree]];
+  remotePaths = Cases[Lookup[remoteTree["Body"], "tree", {}],
+    a_Association /; Lookup[a, "type", None] === "blob" :>
+      Lookup[a, "path", ""]];
+  localDir = GitHubEnsureLocalRepo[packageName];
+  If[FailureQ[localDir], Return[localDir]];
+  localPaths = iNormalizeGitPath[
+    FileNameJoin[FileNameDrop[#, FileNameDepth[localDir]]]] & /@
+    iListLocalFiles[localDir];
+  <|"WouldDelete" -> Sort[Complement[remotePaths, localPaths]],
+    "RemoteCount" -> Length[remotePaths],
+    "LocalCount" -> Length[localPaths],
+    "Owner" -> owner, "Repository" -> repo, "Branch" -> baseBranch|>];
+
+PackageCommitDeletionPreview[___] :=
+  <|"Status" -> "Failed",
+    "Reason" -> "PackageCommitDeletionPreview[packageName_String] を期待。"|>;
 
 (* --- LLM コミットメッセージ生成 (MessageGenerator ビルダー、content-aware) --- *)
 
@@ -3607,11 +4252,38 @@ iPACDiffForPrompt[diff_Association] := Module[{a, c, r, lines},
   If[lines === {}, "変更なし", StringRiffle[lines, "\n"]]
 ];
 
+(* 文字列に日本語 (CJK 記号・かな・漢字・全角形) が含まれるか。
+   生成プロンプトは日本語 1 文を要求するので、日本語を全く含まないメッセージは
+   CLI 警告/エラー等の英語定型文とみなし不採用にする (2026-07-18)。 *)
+iPACHasJapaneseQ[s_String] := AnyTrue[ToCharacterCode[s],
+  (16^^3000 <= # <= 16^^30FF) || (16^^3400 <= # <= 16^^9FFF) ||
+    (16^^FF01 <= # <= 16^^FF60) &];
+iPACHasJapaneseQ[_] := False;
+
+(* Claude Code CLI の警告/通知行か (英語のみの行が対象。日本語を含む行は本文とみなす)。
+   実事故 (2026-07-16, commit 45b7ea19): 未 trust ワークスペースで CLI が stderr へ出した
+   "Ignoring 5 permissions.allow entries from .claude/settings.json: this workspace
+   has not been trusted. Run Claude Code interactively ..." が bat の 2>&1 で
+   プレーンテキスト応答の先頭に混入し、iPACCleanMessage の先頭行選択で
+   そのままコミットメッセージに採用された。 *)
+iPACCLIWarningLineQ[line_String] := Module[{t = StringTrim[line]},
+  ! iPACHasJapaneseQ[t] &&
+    TrueQ @ Or[
+      StringStartsQ[t, "Ignoring" | "Warning" | "warning:" | "WARN" |
+        "Error" | "error:" | "fatal:" | "Note:" | "Notice" | "Usage:"],
+      StringContainsQ[t,
+        "permissions.allow" | "permissions.deny" | "has not been trusted" |
+          "Run Claude Code interactively" | "trust dialog" |
+          "hasTrustDialogAccepted"]]];
+iPACCLIWarningLineQ[_] := False;
+
 (* LLM 応答を単文メッセージに整形: code fence マーカー行のみ除去 (本文は残す) ->
-   先頭非空行 -> 前後引用符除去。フェンスで全体を囲んだ応答でも本文を失わない。 *)
+   CLI 警告/通知行を除去 -> 先頭非空行 -> 前後引用符除去。
+   フェンスで全体を囲んだ応答でも本文を失わない。 *)
 iPACCleanMessage[resp_String] := Module[{lines},
   lines = StringTrim /@ StringSplit[resp, "\n"];
   lines = DeleteCases[lines, l_ /; StringMatchQ[l, "```" ~~ ___]];  (* ```/```lang 行を除去 *)
+  lines = DeleteCases[lines, l_ /; iPACCLIWarningLineQ[l]];  (* CLI 警告行を除去 *)
   lines = Select[lines, # =!= "" &];
   If[lines === {}, Return["", Module]];
   StringTrim[First[lines], ("\"" | "'" | "「" | "」" | "`")]
@@ -3641,20 +4313,24 @@ iPACUnifiedDiff[snapPath_String, srcPath_String, maxChars_Integer] := Module[
   If[StringLength[out] > maxChars, StringTake[out, maxChars] <> "\n...(truncated)", out]
 ];
 
-(* ChangedDetail から変更内容セクションを組み立てる (合計/ファイル毎の文字数上限つき)。 *)
+(* ChangedDetail (変更・追加ファイルの Rel/Src/Snap) から変更内容セクションを組み立てる。
+   追加ファイルは Snap 不在で全行が + (新規内容) になる。
+   各ファイルに公平な予算 (合計/ファイル数、ただし各 300〜maxPerFile) を配分し、
+   先頭の巨大ファイルが予算を食って末尾 (追加ファイル等) が落ちるのを防ぐ。 *)
 iPACContentForPrompt[diff_Association, maxTotal_Integer, maxPerFile_Integer] := Module[
-  {detail, parts = {}, total = 0},
+  {detail, added, n, effPerFile, parts},
   detail = Lookup[diff, "ChangedDetail", {}];
+  added = Lookup[diff, "Added", {}];
   If[! ListQ[detail] || detail === {}, Return["", Module]];
-  Do[
-    Module[{rel, d, header, block},
+  n = Max[1, Length[detail]];
+  effPerFile = Min[maxPerFile, Max[300, Ceiling[maxTotal / n]]];
+  parts = Table[
+    Module[{rel, d, header},
       rel = ToString @ Lookup[item, "Rel", "?"];
       d = iPACUnifiedDiff[ToString @ Lookup[item, "Snap", ""],
-        ToString @ Lookup[item, "Src", ""], maxPerFile];
-      header = "## " <> rel <> "\n";
-      block = header <> d;
-      If[StringTrim[d] =!= "" && total + StringLength[block] <= maxTotal,
-        AppendTo[parts, block]; total += StringLength[block]]],
+        ToString @ Lookup[item, "Src", ""], effPerFile];
+      header = "## " <> rel <> If[MemberQ[added, rel], " (新規ファイル)", ""] <> "\n";
+      If[StringTrim[d] === "", Nothing, header <> d]],
     {item, detail}];
   StringRiffle[parts, "\n"]
 ];
@@ -3676,6 +4352,32 @@ iPACResolveQueryFn[spec_] := Which[
     iPACWrapModel[spec],
   True, spec
 ];
+
+(* LLM 応答がエラー/レート制限メッセージか判定 (コミットメッセージに流用させない)。
+   claudecode がロード済みならその堅牢検出器を再利用、無ければローカル検出で fail-closed。
+   例: "You've hit your session limit ・ resets 5:30pm (Asia/Tokyo)" / "Error: ..." を弾く。 *)
+iPACLooksLikeErrorResponse[s_String] := Module[{t = StringTrim[s]},
+  TrueQ @ Or[
+    StringStartsQ[t, "Error"],
+    StringStartsQ[t, "{\"type\":\"error\""],
+    StringContainsQ[s, "\"is_error\":true"],
+    StringContainsQ[s, "\"error\":\"rate_limit\"" | "\"error\":\"overloaded\"" |
+                       "\"error\":\"api_error\""],
+    (StringLength[s] < 1000 &&
+      StringContainsQ[s, "\[CenterDot]"] &&
+      StringContainsQ[s, "limit" | "resets", IgnoreCase -> True]),
+    (StringLength[s] < 1000 &&
+      StringContainsQ[s, "hit your limit" | "hit your session limit" |
+                         "session limit" | "usage limit" | "rate limit" |
+                         "overloaded" | "quota exceeded" | "too many requests",
+        IgnoreCase -> True])]];
+iPACLooksLikeErrorResponse[_] := True;
+
+iPACErrorResponseQ[s_String] := TrueQ[iPACLooksLikeErrorResponse[s]] ||
+  (Length[Names["ClaudeCode`Private`iIsAPIErrorResponse"]] > 0 &&
+   Length[DownValues[ClaudeCode`Private`iIsAPIErrorResponse]] > 0 &&
+   TrueQ[Quiet @ Check[ClaudeCode`Private`iIsAPIErrorResponse[s], False]]);
+iPACErrorResponseQ[_] := True;
 
 Options[PackageLLMMessageGenerator] = {
   "MaxChars" -> 80, "IncludeContent" -> True,
@@ -3702,7 +4404,10 @@ PackageLLMMessageGenerator[queryFnSpec_, opts:OptionsPattern[]] := Module[
         "変更ファイル:\n" <> iPACDiffForPrompt[diff] <>
         If[contentSec =!= "", "\n\n変更内容 (- 削除行 / + 追加行):\n" <> contentSec, ""];
       resp = Quiet @ Check[qfn[prompt], $Failed];
-      msg = If[StringQ[resp], iPACCleanMessage[resp], ""];
+      (* エラー/レート制限応答はコミットメッセージに使わず決定論へ落とす *)
+      msg = If[StringQ[resp] && ! iPACErrorResponseQ[resp], iPACCleanMessage[resp], ""];
+      (* 日本語 1 文の指示に対し日本語を全く含まない応答 (CLI 警告等の英語定型文) も不採用 *)
+      If[! iPACHasJapaneseQ[msg], msg = ""];
       If[StringQ[msg] && StringTrim[msg] =!= "", msg, iPACDefaultMessage[diff]]
     ]]
 ];
@@ -3720,4 +4425,22 @@ If[Length[Names["ClaudeOrchestrator`ClaudeWorkflowRegisterHandler"]] > 0,
       <|"Symbol"             -> GitHubREST`PackageCommitPlan,
         "UseAsFunctionRoute" -> True, "UseAsHandlerRef" -> True,
         "SideEffectClass"    -> "ReadOnly", "OwnerPackage" -> "github"|>],
+    Null]];
+
+(* NBAccess trusted-head 登録: GitHubCommitLog / GitHubListCommits は
+   コミット履歴の読み取り専用取得で、リポジトリへの書き込み・削除を
+   一切伴わない。「履歴を読むだけの関数に承認は不要」という方針のもと、
+   ClaudeEval の提案コードから AutoPermit で実行できるよう trusted head に
+   登録する (コミット・PR 等の書き込み系 GitHub* は従来どおり承認対象)。 *)
+If[Length[Names["NBAccess`$NBTrustedPackageHeads"]] > 0,
+  Quiet @ Check[
+    (If[!AssociationQ[NBAccess`$NBTrustedPackageHeads],
+       NBAccess`$NBTrustedPackageHeads = <||>];
+     NBAccess`$NBTrustedPackageHeads["GitHubREST`"] =
+       DeleteDuplicates @ Join[
+         Replace[Lookup[NBAccess`$NBTrustedPackageHeads,
+           "GitHubREST`", {}], Except[_List] -> {}],
+         (* GitHubServiceStatus は公開ステータスページの GET のみで、
+            リポジトリにも api.github.com にも触れない (トークン不使用)。 *)
+         {"GitHubCommitLog", "GitHubListCommits", "GitHubServiceStatus"}]),
     Null]];

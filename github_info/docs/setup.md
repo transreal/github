@@ -83,6 +83,8 @@ $packageDirectory/
 
 なお、`GithubRepositories/[packageName]/` は GitHub へのアップロード内容であると同時に、**前回コミット時のスナップショット**としても機能します。`PackageCommitDiff` / `PackageCommit` はこのスナップショットと現ソースを内容比較して差分を求めるため、リフレッシュ前に呼び出す必要があります。
 
+`[packageName]_info/docs/docs/` のようなネストした重複フォルダは、マニフェストの有無にかかわらず常にデフォルト除外パターンで保護されます。過去の同期事故に由来する残骸で、混入すると pull のたびにローカルへ再生成されてしまうため、必要であれば手動で削除してください（自動削除はされません）。
+
 ## 次のステップ
 
 セットアップが完了したら、以下の機能をお試しください：
@@ -93,6 +95,7 @@ $packageDirectory/
 4. **配布前のマニフェスト検証**: `GitHubValidateManifest["packageName"]`
 5. **ローカルファイルの UTF-8 読み取り**: `GitHubReadLocalFile["packageName", "path"]`
 6. **差分ベースの自動コミット**: `PackageCommit["packageName"]`（既定は DryRun。計画とコミットメッセージ案のみを返します）
+7. **削除候補の事前確認**: `PackageCommitDeletionPreview["packageName"]`（`DeleteMissing -> True` でのコミット前に必ず確認）
 
 詳細な使用方法については、各機能のヘルプドキュメントをご参照ください。
 
@@ -127,6 +130,21 @@ PackageCommit["myPackage", "DryRun" -> False]
 
 ドキュメントが古く `Blocked` になった場合は、ドキュメントを更新してから再実行してください。メッセージ案だけを確認したい場合は `DryRun` のまま `"SkipDocsGate" -> True` を指定するとゲートを無視してプレビューできます（実コミットでは `SkipDocsGate` は無効で、必ず鮮度ゲートが適用されます）。
 
+## 補足: 削除を伴うコミットの安全確認
+
+`PackageCommit` は `"DeleteMissing" -> False` を既定値とするオプションを持ちます。`True` を指定すると、リモートの tree にはあるがローカルミラーに存在しないファイル（blob）を削除対象としてコミットに含めます。
+
+削除は取り消しにくい操作のため、`DeleteMissing -> True` でコミットする前に、必ず `PackageCommitDeletionPreview[packageName]` で削除候補を確認してください。この関数は読み取り専用で、実際には何も削除せず、削除されるファイルパスの一覧だけを返します。
+
+```mathematica
+(* 削除候補を確認する（読み取り専用） *)
+PackageCommitDeletionPreview["myPackage"]
+(* <|"WouldDelete" -> {"old/unused.wl", ...}, "RemoteCount" -> 12, "LocalCount" -> 10|> *)
+
+(* 確認後、削除を伴う実コミットを行う場合 *)
+PackageCommit["myPackage", "DryRun" -> False, "DeleteMissing" -> True]
+```
+
 ## 補足: 並列実行時の注意
 
 複数のノートブックや Kernel から同時に `GitHubCommit` / `GitHubRefreshAndCommit` を実行すると、GitHub API 側で 422 (head SHA 競合) エラーが発生する場合があります。パッケージは自動的に head SHA を再取得してリトライしますが、競合が繰り返す場合は**並列実行を避けるか、時間をおいて再試行**してください。
@@ -140,3 +158,4 @@ PackageCommit["myPackage", "DryRun" -> False]
 local  = GitHubReadLocalFile["myPackage", "myPackage.wl"];
 remote = GitHubReadFile["myPackage", "myPackage.wl"];
 local === remote
+```

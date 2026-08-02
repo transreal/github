@@ -2,7 +2,7 @@
 
 NBAccess.wl と claudecode.wl と連携する GitHub REST ヘルパー。認証は `NBAccess`NBGetAPIKey["github"]` に委譲。パッケージ名でリモートリポジトリを操作する。多くの関数は第1引数に packageName_String を取り、`$packageDirectory` 内の `.wl`/Paclet を対象とする。日本語パッケージ名は repo_database.json 経由で英語リポジトリ名に解決される。失敗時は `$Failed` または `Failure[...]` を返す。
 
-共通オプション解決規則: `Owner -> Automatic` は認証トークンの所有ユーザー、`Repository -> Automatic` は packageName(RepoDB 解決後)、`BaseBranch -> Automatic` はリポジトリの default branch、`Branch -> Automatic` は BaseBranch。`Fallback -> True` で Claude Code エラー時のフォールバック(リポジトリ名翻訳など)を許可。
+共通オプション解決規則: `Owner -> Automatic` は認証トークンの所有ユーザー、`Repository -> Automatic` は packageName(RepoDB 解決後)、`BaseBranch -> Automatic` はリポジトリの default branch、`Branch -> Automatic` は BaseBranch。`Fallback -> True` で Claude Code エラー時のフォールバック(リポジトリ名翻訳など)を許可。ほぼ全公開関数に `Fallback -> False` オプションがある。
 
 ## URL 取得
 ### GitHubPackageURL[packageName, opts]
@@ -64,26 +64,27 @@ Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseB
 ### GitHubPull[packageName, opts]
 指定ブランチのリポジトリ内容をローカル作業フォルダへ取得
 → Association | Failure
-Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, Clean -> False (取得前に既存ローカルファイルを削除)
+Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, LocalRepoPath -> Automatic, Clean -> False (取得前に既存ローカルファイルを削除), Fallback -> False
 
 ### GitHubCommit[packageName, message, opts]
 ローカル作業フォルダの内容を blob/tree/commit/ref 更新で GitHub の指定ブランチへまとめてコミット
 → Association | Failure
-Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, CreateBranch -> Automatic (Automatic は Branch =!= BaseBranch なら True), LocalRepoPath -> Automatic, IncludePackageFile -> True, DeleteMissing -> False (ローカルに無いリモート blob を tree から削除), Force -> False (ref 更新で fast-forward 制約を無視), Author -> Automatic (`<|"name"->..,"email"->..|>`), Committer -> Automatic
+Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, CreateBranch -> Automatic (Automatic は Branch =!= BaseBranch なら True), LocalRepoPath -> Automatic, IncludePackageFile -> True, PackageFile -> Automatic, DeleteMissing -> False (ローカルに無いリモート blob を tree から削除), Force -> False (ref 更新で fast-forward 制約を無視), Author -> Automatic (`<|"name"->..,"email"->..|>`), Committer -> Automatic, Fallback -> False
 
 ### GitHubCreatePullRequest[packageName, title, opts]
 pull request を作成
 → Association | Failure
-Options: Owner -> Automatic, Repository -> Automatic, Head -> Automatic (Automatic は Branch), BaseBranch -> Automatic, Body -> "", Draft -> False, MaintainerCanModify -> Automatic
+Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, Head -> Automatic (Automatic は Branch), BaseBranch -> Automatic, Body -> "", Draft -> False, MaintainerCanModify -> True, Fallback -> False
 
 ### GitHubRefreshAndCommit[packageName, message, opts]
 manifest に基づき対象ファイル群をローカルへコピーし GitHub へコミット。`_info/docs/README.md` 変更時はトップ README.md も自動更新
 → Association | Failure
-Options: GitHubCommit 系 + ExtraDirectories -> {}
+Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, CreateBranch -> Automatic, LocalRepoPath -> Automatic, DeleteMissing -> False, Force -> False, Author -> Automatic, Committer -> Automatic, ExtraDirectories -> {}, Fallback -> False
 
-### GitHubSubmitPullRequest[packageName, title, message]
+### GitHubSubmitPullRequest[packageName, title, message, opts]
 refresh → branch 作成 → commit → pull request 作成を一括実行
 → Association | Failure
+Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, LocalRepoPath -> Automatic, DeleteMissing -> False, Force -> False, Author -> Automatic, Committer -> Automatic, Body -> "", Draft -> False, MaintainerCanModify -> True, Fallback -> False
 
 ## リポジトリ名 DB
 日本語パッケージ名 → 英語リポジトリ名の対応表 (`GithubRepositories/repo_database.json`)。
@@ -104,8 +105,9 @@ GitHub から `$packageDirectory` へ初回ダウンロード。url 指定で他
 Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, Fallback -> False
 例: GitHubInstallPackage["pkg", "https://github.com/user/repo"]
 
-### GitHubUpdatePackage[packageName] → Association | Failure
-既存パッケージを GitHub の最新に更新
+### GitHubUpdatePackage[packageName, opts] → Association | Failure
+既存パッケージを GitHub の最新に更新。実体は GitHubInstallPackage への委譲
+Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, Fallback -> False
 
 ## プルリクエスト管理
 ### GitHubListPullRequests[packageName, opts]
@@ -118,18 +120,27 @@ PR 一覧を Review/Pull/Merge/Close ボタン付き Grid で表示
 → Grid | {} | Failure
 Options: Owner -> Automatic, Repository -> Automatic, Fallback -> False
 
-### GitHubMergePullRequest[packageName, prNumber, reason] → Association | Failure
+### GitHubMergePullRequest[packageName, prNumber, reason, opts] → Association | Failure
 PR をマージ
+Options: Owner -> Automatic, Repository -> Automatic, Fallback -> False
 
-### GitHubClosePullRequest[packageName, prNumber, reason] → Association | Failure
+### GitHubClosePullRequest[packageName, prNumber, reason, opts] → Association | Failure
 PR をクローズ
+Options: Owner -> Automatic, Repository -> Automatic, Fallback -> False
 
-### GitHubReviewPullRequest[packageName, prNumber]
+### GitHubReviewPullRequest[packageName, prNumber, opts]
 PR のコードをダウンロードし、レビュー用コードをノートブックに出力
+Options: Owner -> Automatic, Repository -> Automatic, Fallback -> False
 
 ## コミット履歴
+### GitHubCommitLog[packageName, opts]
+コミット履歴を日付範囲付きで取得しコンパクト形式で返す。読み取り専用・リポジトリ無変更のため**承認不要 (AutoPermit)**。「いつ何が追加/変更されたか」「6/20 以降の変更は?」のような更新履歴・changelog の質問はまずこれを使う (GithubRepositories/ は .git を持たないミラーなので、git log の代わりに常にこの関数を使う)
+→ {<|"SHA", "Date" (DateObject), "Author", "Message"|>..} | Failure
+Options: MaxItems -> 50, "Since" -> None ("2026-06-20" 形式文字列 or DateObject), "Until" -> None, Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, Fallback -> False
+例: GitHubCommitLog["SourceVault", "Since" -> "2026-06-20"]
+
 ### GitHubListCommits[packageName, opts]
-リポジトリのコミット履歴をリストで返す
+リポジトリのコミット履歴を GitHub API の生レスポンスのまま返す (読み取り専用・承認不要)
 → List | Failure
 Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, MaxItems -> 30, Fallback -> False
 
@@ -138,11 +149,20 @@ Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseB
 → Grid | {} | Failure
 Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, MaxItems -> 30, Fallback -> False
 
-### GitHubReviewCommit[packageName, sha]
+### GitHubReviewCommit[packageName, sha, opts]
 指定コミットの詳細・差分をノートブックに表示
+Options: Owner -> Automatic, Repository -> Automatic, Fallback -> False
 
-### GitHubRevertCommit[packageName, sha] → Association | Failure
+### GitHubRevertCommit[packageName, sha, reason, opts] → Association | Failure
 指定コミットの変更を元に戻すリバートコミットを作成
+Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, Fallback -> False
+
+## GitHub 稼働状況
+### GitHubServiceStatus[] / GitHubServiceStatus[key]
+GitHub 稼働状況 (githubstatus.com の公開 Statuspage API、認証不要・GitHub API トークン不使用) を取得する。5xx でコミットが失敗したとき、コード側の不具合か GitHub 側の障害かを切り分けるために使う。読み取り専用でリポジトリは変更しない。key 指定時は該当キーのみ返す
+→ `<|"Healthy", "Indicator", "Description", "CommitAffected", "Components", "Degraded", "Incidents", "CheckedAt"|>` | 単一値 | Failure
+Options: "Timeout" -> 20
+例: GitHubServiceStatus["CommitAffected"] (PackageCommit / GitHubCommit が依存する "API Requests"・"Git Operations" のいずれかが operational でないとき True)
 
 ## 自動コミット駆動 (旧 PackageAutoCommit)
 GitHubRefreshAndCommit の前段。docs 鮮度ゲート → 前回コミット差分 → コミットメッセージ案 → DryRun 既定駆動。
@@ -156,15 +176,19 @@ GitHubRefreshAndCommit の前段。docs 鮮度ゲート → 前回コミット�
 → `<|Status, Package, SnapshotDir, SnapshotExists, Added, Changed, Removed, UnchangedCount, ChangeCount, ChangedDetail, Summary|>`
 
 ### PackageCommitPlan[packageName, opts] → Association
-鮮度ゲート → 差分 → メッセージ案 を ReadOnly に組み立て(実コミットなし)。docs 古ければ Status -> Blocked、差分無しは Status -> NoChange、両 OK で Status -> OK + CommitMessage
-→ `<|Status, Package, Proceed, (StaleDocs | Diff | CommitMessage), ...|>`
-Options: "MessageGenerator" -> Automatic (差分からの決定論的単文 | "固定文字列" | fn[diffAssoc]->String), "SkipDocsGate" -> False (True で鮮度ゲート無視、OK 結果に StaleDocs 警告 + DocsGateSkipped)
+鮮度ゲート → 差分 → メッセージ案 を ReadOnly に組み立て(実コミットなし)。docs 古ければ Status -> Blocked、差分無しは Status -> NoChange、README の「## 謝辞」節が前回コミットから消える場合も既定で Status -> Blocked(AllowAckRemoval で解除可)、すべて OK で Status -> OK + CommitMessage
+→ `<|Status, Package, Proceed, (StaleDocs | AckLossFiles | Diff | CommitMessage), ...|>`
+Options: "MessageGenerator" -> Automatic (Automatic は $PackageCommitModel で分岐。固定文字列 | fn[diffAssoc]->String も可), "SkipDocsGate" -> False (True で鮮度ゲート無視、OK 結果に StaleDocs 警告 + DocsGateSkipped), "AllowAckRemoval" -> False (True で README の「## 謝辞」節消失によるブロックを解除)
 
 ### PackageCommit[packageName, opts] → Association
 メイン駆動関数。PackageCommitPlan 実行後、Status -> OK のとき GitHubRefreshAndCommit を呼ぶ
 → `<|Status (DryRun|Committed|Blocked|NoChange|Failed), Committed, CommitMessage, ...|>`
-Options: "DryRun" -> True (既定。実コミットせず計画とメッセージ案を返す), "MessageGenerator" -> Automatic, "SkipDocsGate" -> False (True は DryRun プレビュー専用。実コミット (DryRun -> False) では SkipDocsGate に関わらず docs 古ければ Blocked で停止)
+Options: "DryRun" -> True (既定。実コミットせず計画とメッセージ案を返す), "MessageGenerator" -> Automatic, "SkipDocsGate" -> False (True は DryRun プレビュー専用。実コミット (DryRun -> False) では SkipDocsGate に関わらず docs 古ければ Blocked で停止), "DeleteMissing" -> False (True で GitHubRefreshAndCommit へ転送しリモート残骸を削除。実行前に PackageCommitDeletionPreview で削除候補を必ず確認すること), "AllowAckRemoval" -> False (README の「## 謝辞」節が消えるコミットは既定で Blocked。意図的削除時のみ True)
 例: PackageCommit["github", "DryRun" -> False, "MessageGenerator" -> PackageLLMMessageGenerator[$iModelSonnet]]
+
+### PackageCommitDeletionPreview[packageName] → Association
+PackageCommit[..., "DeleteMissing" -> True] で削除されるリモートファイル(リモート tree にあってローカルミラーに無い blob)を実行せずに列挙する読み取り専用プレビュー。DeleteMissing -> True の前に必ず実行して確認すること
+→ `<|"WouldDelete" -> {path..}, "RemoteCount", "LocalCount"|>`
 
 ### PackageLLMMessageGenerator[queryFn, opts] → Function
 LLM でコミットメッセージを生成する MessageGenerator 関数 (diffAssoc -> String) を返す。PackageCommit/PackageCommitPlan の "MessageGenerator" に渡す。queryFn は prompt->String の関数。モデル指定子(tuple {provider,model} 例 $iModelSonnet、またはモデル名 String)を渡すと `ClaudeCode`ClaudeQueryBg[prompt, Model->spec]` で自動ラップ(要 claudecode)。既定 "IncludeContent"->True は変更行(- 削除/+ 追加、ChangedDetail から計算)をプロンプトに含めるためソース変更行が model に送られる(信頼できる model を使う)。queryFn が String を返さない/空なら決定論メッセージにフォールバック
@@ -176,5 +200,17 @@ Options: "MaxChars" -> 80, "IncludeContent" -> True (False でファイル名の
 MIT ライセンスの著作権者名。空文字列の場合ライセンスセクションは README.md に挿入されない
 例: $GitHubLicenseHolder = "Katsunobu Imai"
 
+### $PackageCommitModel
+型: Automatic | None | モデル指定子({provider,model} 例 $iModelSonnet、またはモデル名 String) | (prompt->String 関数), 初期値: Automatic
+PackageCommit / PackageCommitPlan の既定コミットメッセージモデル。既定 Automatic では claudecode がロード済みなら周囲の既定モデルで差分内容を要約した LLM メッセージを生成し、未ロード/失敗時は決定論的なファイル名列挙にフォールバックする。特定モデルを使うにはモデル指定子か prompt->文字列 関数を代入する。None を代入すると LLM を呼ばず決定論メッセージに固定する。再ロードで値を保持する
+例: $PackageCommitModel = $iModelSonnet; PackageCommit["claudecode", "DryRun" -> True]["CommitMessage"]
+
 ## オプションシンボル一覧
-Owner, Repository, Public, Description, Homepage, AutoInit, GitignoreTemplate, LicenseTemplate, Branch, BaseBranch, CreateBranch, LocalRepoPath, PackageFile, IncludePackageFile, ReturnType, Clean, Force, DeleteMissing, Head, Body, Draft, MaintainerCanModify, Author, Committer, ExtraDirectories, MaxItems
+Owner, Repository, Public, Description, Homepage, AutoInit, GitignoreTemplate, LicenseTemplate, Branch, BaseBranch, CreateBranch, LocalRepoPath, PackageFile, IncludePackageFile, ReturnType, Clean, Force, DeleteMissing, Head, Body, Draft, MaintainerCanModify, Author, Committer, ExtraDirectories, MaxItems, Fallback
+
+---
+
+主な変更点(前バージョンとの差分):
+- 新規公開関数 `GitHubServiceStatus[]` / `GitHubServiceStatus[key]` を追加(GitHub 稼働状況、読み取り専用・認証不要)。
+- `PackageCommitPlan` / `PackageCommit` に新オプション `"AllowAckRemoval" -> False`(README の「## 謝辞」節消失ガード)を追加し、`PackageCommitPlan` の戻り値に `AckLossFiles` を追記。
+- 他の関数シグネチャ・オプションはソースコードと一致していることを確認済み(変更なし)。

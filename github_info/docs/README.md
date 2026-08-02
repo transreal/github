@@ -12,7 +12,7 @@ APIキーをコード中に直書きしない安全設計を採用していま�
 
 ## マニフェスト駆動のファイル管理
 
-単純な `.wl` ファイル単体のアップロードだけでなく、パクレット（フォルダ型パッケージ）や付属ドキュメント群をまとめて同期するために、**マニフェスト**（`packageName_info/upload_manifest.json`）を導入しています。マニフェストにはアップロード対象ファイル・ディレクトリ・除外パターンを記述でき、パッケージ種別（`.wl` 単体 / パクレットフォルダ）を自動検出して初回は自動生成されます。パッケージ種別が変更された場合（`.wl` からパクレットへの変換など）もマニフェストは自動更新されます。`_info/docs/README.md` が存在する場合はリポジトリのトップレベル `README.md` として自動配置されるため、ドキュメント管理も一元化できます。
+単純な `.wl` ファイル単体のアップロードだけでなく、パクレット（フォルダ型パッケージ）や付属ドキュメント群をまとめて同期するために、**マニフェスト**（`packageName_info/upload_manifest.json`）を導入しています。マニフェストにはアップロード対象ファイル・ディレクトリ・除外パターンを記述でき、パッケージ種別（`.wl` 単体 / パクレットフォルダ）を自動検出して初回は自動生成されます。パッケージ種別が変更された場合（`.wl` からパクレットへの変換など）もマニフェストは自動更新されます。`_info/docs/README.md` が存在する場合はリポジトリのトップレベル `README.md` として自動配置されるため、ドキュメント管理も一元化できます。`_info/history/`・`_info/references/`・`_info/docs/docs/` のようなネストした重複フォルダは、マニフェストの設定に関わらず常に除外対象として保護されます。特に `docs/docs/` パターンは過去の同期事故に由来する残骸で、混入すると pull のたびにローカルへ再生成されてしまうため、必要であれば手動で削除してください（自動削除はされません）。
 
 ## 複数ファイルのパッケージ対応
 
@@ -24,7 +24,7 @@ GitHub Contents API の単純なファイル更新ではなく、Git の低レ�
 
 ## 差分ベースの自動コミット（ドキュメント鮮度ゲート付き）
 
-旧 `PackageAutoCommit.wl` の機能を **`github.wl` に統合**し、任意のローカルパッケージを安全に GitHub へオートコミットする支援関数群を提供します。中核となる `PackageCommit` は、(1) **ドキュメント鮮度ゲート**（`PackageDocsFreshnessGate`）で `_info/docs/` の `api.md` / `api_*.md` が対応する `.wl` 以降に更新されているかを検査し、(2) 前回コミットのスナップショットと現ソースを内容比較する**差分計算**（`PackageCommitDiff`）を行い、(3) 差分から**コミットメッセージ案**を生成してから、ゲート通過かつ差分ありのときだけ `GitHubRefreshAndCommit` を実行します。`.wl` を更新したのにドキュメントが古いままの場合は `Blocked` となり実コミットを停止するため、ドキュメントとソースの乖離を防げます。既定は `"DryRun" -> True`（実コミットせず計画とメッセージ案のみ確認）で、安全側に倒した設計です。コミットメッセージは決定論的な単文生成のほか、`PackageLLMMessageGenerator` で [claudecode](https://github.com/transreal/claudecode) の LLM による content-aware 生成（実際の変更行を要約）に切り替えられます。
+旧 `PackageAutoCommit.wl` の機能を **`github.wl` に統合**し、任意のローカルパッケージを安全に GitHub へオートコミットする支援関数群を提供します。中核となる `PackageCommit` は、(1) **ドキュメント鮮度ゲート**（`PackageDocsFreshnessGate`）で `_info/docs/` の `api.md` / `api_*.md` が対応する `.wl` 以降に更新されているかを検査し、(2) 前回コミットのスナップショットと現ソースを内容比較する**差分計算**（`PackageCommitDiff`）を行い、(3) 差分から**コミットメッセージ案**を生成してから、ゲート通過かつ差分ありのときだけ `GitHubRefreshAndCommit` を実行します。`.wl` を更新したのにドキュメントが古いままの場合は `Blocked` となり実コミットを停止するため、ドキュメントとソースの乖離を防げます。既定は `"DryRun" -> True`（実コミットせず計画とメッセージ案のみ確認）で、安全側に倒した設計です。コミットメッセージは決定論的な単文生成のほか、`PackageLLMMessageGenerator` で [claudecode](https://github.com/transreal/claudecode) の LLM による content-aware 生成（実際の変更行を要約）に切り替えられます。削除を伴うコミット（`DeleteMissing -> True`）の前には、読み取り専用の `PackageCommitDeletionPreview` で削除候補ファイルを事前確認できます。また DryRun のプレビュー時に限り `"SkipDocsGate" -> True` でドキュメント鮮度ゲートを一時的にスキップしメッセージ案だけを確認できますが、実コミットでは無視され必ずゲートが適用されます。
 
 ## 日本語パッケージ名対応
 
@@ -190,11 +190,12 @@ GitHubInstallPackage["pkg", "https://github.com/alice/repo"]
 | `BaseBranch` | `Automatic` | デフォルトブランチ（API から自動取得） |
 | `Public` | `False` | `True` で公開リポジトリ作成 |
 | `CreateBranch` | `Automatic` | ブランチ不在時に自動作成するか（`Branch =!= BaseBranch` なら `True`） |
-| `DeleteMissing` | `False` | ローカルに無いリモートファイルを削除するか |
+| `DeleteMissing` | `False` | ローカルに無いリモートファイルを削除するか（`True` の前に `PackageCommitDeletionPreview` での事前確認を推奨） |
 | `MaxItems` | `30` | `GitHubListCommits` / `GitHubCommitDataset` で取得するコミット数の上限 |
 | `ExtraDirectories` | `{}` | マニフェストに永続追加するディレクトリのリスト（例: `{"Claude Directives"}`） |
 | `Fallback` | `False` | `True` で API 制限時に代替モデルでの処理を有効化 |
 | `"DryRun"` | `True` | `PackageCommit` で実コミットせず計画とメッセージ案のみ返す |
+| `"SkipDocsGate"` | `False` | `PackageCommitPlan` / `PackageCommit` の DryRun 時のみドキュメント鮮度ゲートをスキップ（実コミットでは無効） |
 
 ### 主な機能
 
@@ -209,15 +210,16 @@ GitHubInstallPackage["pkg", "https://github.com/alice/repo"]
 
 - **`GitHubReadManifest[name]`** — `packageName_info/upload_manifest.json` を読む（不在時は自動生成）。パッケージ種別変更時は自動更新。`<<パッケージ名>>_*.wl` 形式の補助ファイルを `$packageDirectory` から自動検出してマニフェストに追加する
 - **`GitHubValidateManifest[name]`** — `upload_manifest.json` を検査し、ファイルの実在確認・機密情報らしきファイルの混入チェック・除外パターンの確認を行う。コミット・配布前の健全性チェックとして使用する
-- **`GitHubRefreshLocalPackageGroup[name]`** — マニフェストに従いファイルをローカル作業フォルダへコピー。`_info/originals/` の内容を元のリポジトリパスへ書き戻す処理（`iRestoreOriginalsToRepo`）も実行する。ソース側で削除されたファイルはローカルリポジトリからも自動クリーンアップされる
+- **`GitHubRefreshLocalPackageGroup[name]`** — マニフェストに従いファイルをローカル作業フォルダへコピー。`_info/originals/` の内容を元のリポジトリパスへ書き戻す処理（`iRestoreOriginalsToRepo`）も実行する。ソース側で削除されたファイルはローカルリポジトリからも自動クリーンアップされる。`_info/history/`・`_info/references/`・`_info/docs/docs/` は常に保護され取り込まれない
 - **`GitHubRefreshLocalPackage[name]`** — `.wl` 単体をローカルへコピー（後方互換用）
 
 #### 差分ベースの自動コミット（旧 PackageAutoCommit、github.wl に統合）
 
 - **`PackageDocsFreshnessGate[name]`** — `_info/docs/` の `api.md` / `api_*.md` が対応する `.wl` 以降に更新されているか検査する。古い場合は `Proceed -> False`
 - **`PackageCommitDiff[name]`** — 前回コミットスナップショットと現ソースを内容比較し、追加・変更・削除ファイルを求める（ReadOnly。リフレッシュ前に呼ぶ）
-- **`PackageCommitPlan[name]`** — ゲート → 差分 → メッセージ案を ReadOnly に組み立てる。通過かつ差分ありのときのみ `Status -> "OK"`
-- **`PackageCommit[name]`** — 計画を実行し、`Status -> "OK"` のときだけ実コミット。**既定は `"DryRun" -> True`**。ドキュメントが古い／差分なしなら安全に短絡停止する
+- **`PackageCommitPlan[name]`** — ゲート → 差分 → メッセージ案を ReadOnly に組み立てる。通過かつ差分ありのときのみ `Status -> "OK"`。`"SkipDocsGate" -> True` を指定すると DryRun のプレビューに限りゲートを無視できる
+- **`PackageCommit[name]`** — 計画を実行し、`Status -> "OK"` のときだけ実コミット。**既定は `"DryRun" -> True`**。ドキュメントが古い／差分なしなら安全に短絡停止する。実コミットでは `"SkipDocsGate"` は無効
+- **`PackageCommitDeletionPreview[name]`** — `DeleteMissing -> True` でコミットする前に、削除対象となるファイルパスの一覧を確認する読み取り専用関数。実際には何も削除しない
 - **`PackageLLMMessageGenerator[queryFn]`** — 実際の変更行を要約する content-aware なコミットメッセージ生成器（`diff -> String`）を返す。モデル指定子を渡すと claudecode で自動ラップ
 - **`$PackageAutoCommitVersion`** — 自動コミット機能のバージョン
 
@@ -275,7 +277,7 @@ GitHubInstallPackage["pkg", "https://github.com/alice/repo"]
 | `setup.md` | セットアップガイド（要件・インストール・API キー設定・自動コミット・トラブルシューティング） |
 | `user_manual.md` | 各関数の詳細な使い方と引数説明 |
 | `examples/example.md` | 典型的なユースケースのコード例 |
-| `examples/autocommit.md` | 差分ベース自動コミット関数群（`PackageDocsFreshnessGate` / `PackageCommitDiff` / `PackageCommitPlan` / `PackageCommit` / `PackageLLMMessageGenerator`）の実行例集 |
+| `examples/autocommit.md` | 差分ベース自動コミット関数群（`PackageDocsFreshnessGate` / `PackageCommitDiff` / `PackageCommitPlan` / `PackageCommit` / `PackageCommitDeletionPreview` / `PackageLLMMessageGenerator`）の実行例集 |
 
 リポジトリ: [https://github.com/transreal/github](https://github.com/transreal/github)
 
@@ -337,6 +339,17 @@ PackageCommit["mypackage", "DryRun" -> False]
 (* LLM でコミットメッセージを生成（要 claudecode ロード） *)
 PackageCommit["mypackage", "DryRun" -> False,
   "MessageGenerator" -> PackageLLMMessageGenerator[$iModelSonnet, "MaxChars" -> 80]]
+```
+
+### 削除を伴うコミットの事前確認
+
+```wolfram
+(* DeleteMissing -> True でコミットする前に、削除対象ファイルを読み取り専用で確認 *)
+PackageCommitDeletionPreview["mypackage"]
+(* -> <|"WouldDelete" -> {"old/unused.wl", ...}, "RemoteCount" -> 12, "LocalCount" -> 10|> *)
+
+(* 確認後、削除を伴う実コミットを行う *)
+PackageCommit["mypackage", "DryRun" -> False, "DeleteMissing" -> True]
 ```
 
 ### 既存パッケージの更新とプルリクエスト
@@ -409,3 +422,4 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
