@@ -230,6 +230,46 @@ GitHubRevertCommit::usage =
 MaxItems::usage =
   "MaxItems \:306f GitHubListCommits/GitHubCommitDataset \:3067\:53d6\:5f97\:3059\:308b\:30b3\:30df\:30c3\:30c8\:6570\:306e\:4e0a\:9650\:3002\:65e2\:5b9a\:5024\:306f 30\:3002";
 
+GitHubListIssues::usage =
+  "GitHubListIssues[packageName] はリポジトリの Issue を取得し正規化リスト\n" <>
+  "{<|\"Package\", \"Owner\", \"Repository\", \"Number\", \"Title\", \"Body\", \"State\",\n" <>
+  "  \"Labels\", \"Author\", \"AuthorAssociation\", \"CreatedAt\", \"UpdatedAt\",\n" <>
+  "  \"CommentCount\", \"URL\", \"IsPullRequest\"|>..} で返す。\n" <>
+  "リポジトリを一切変更しない読み取り専用操作 (NBAccess trusted head 登録済み)。\n" <>
+  "オプション: Owner, Repository, MaxItems -> 50, \"State\" -> \"open\",\n" <>
+  "\"IncludePullRequests\" -> False (GitHub API は PR も issue として返すため既定で除外)。\n" <>
+  "例: GitHubListIssues[\"claudecode\"]";
+GitHubIssueGet::usage =
+  "GitHubIssueGet[packageName, number] は指定番号の Issue 1 件を正規化 Association で返す。\n" <>
+  "読み取り専用。オプション: Owner, Repository。";
+GitHubIssueComments::usage =
+  "GitHubIssueComments[packageName, number] は Issue のコメント一覧を\n" <>
+  "{<|\"Author\", \"AuthorAssociation\", \"Body\", \"CreatedAt\", \"URL\"|>..} で返す。\n" <>
+  "読み取り専用。オプション: Owner, Repository, MaxItems -> 50。";
+GitHubIssueAuthorProfile::usage =
+  "GitHubIssueAuthorProfile[login] は GitHub ユーザーの公開プロファイルを\n" <>
+  "<|\"Login\", \"Name\", \"CreatedAt\", \"Followers\", \"Following\", \"PublicRepos\",\n" <>
+  "  \"Bio\", \"Company\", \"HTMLURL\"|> で返す。Issue 作成者の信頼度推定の材料\n" <>
+  "(アカウント年齢・フォロワー数など) に使う。読み取り専用。";
+GitHubManagedRepositories::usage =
+  "GitHubManagedRepositories[] は github.wl 管理下のリポジトリ一覧\n" <>
+  "{<|\"Package\", \"Repository\", \"Owner\"|>..} を返す。\n" <>
+  "GithubRepositories/ ミラーフォルダと repo_database.json の和集合。\n" <>
+  "Owner は repo_database.json の owner 登録があればその値、無ければ Automatic\n" <>
+  "(認証ユーザー)。ローカル情報のみでネットワークに触れない読み取り専用操作。";
+GitHubAllOpenIssues::usage =
+  "GitHubAllOpenIssues[] は管理下全リポジトリの Open Issue を集約して\n" <>
+  "<|\"Issues\" -> {正規化 issue..}, \"RepoCount\", \"Errors\" -> {<|\"Package\", \"Failure\"|>..}|>\n" <>
+  "を返す。リポジトリ単位で fail-soft (未作成リポジトリ等はスキップし Errors に記録)。\n" <>
+  "読み取り専用。オプション: MaxItems -> 50 (リポジトリ毎), \"IncludePullRequests\" -> False。\n" <>
+  "SourceVault の汎用イシューDB取込 (SourceVaultIssueIngestGitHub) の供給元。";
+GitHubIssueAddComment::usage =
+  "GitHubIssueAddComment[packageName, number, body] は Issue へコメントを投稿し\n" <>
+  "<|\"URL\", \"Id\", \"CreatedAt\"|> を返す。公開リポジトリへの書き込み操作なので\n" <>
+  "trusted head には登録しない (承認ゲート対象)。呼び出し側で内容の秘匿情報\n" <>
+  "(ローカルパス等) を除去してから渡すこと。オプション: Owner, Repository。\n" <>
+  "SourceVaultIssueNotifyGitHub (解決通知) の送信層。";
+
 GitHubServiceStatus::usage =
   "GitHubServiceStatus[] は GitHub 稼働状況 (githubstatus.com) を取得し\n" <>
   "<|\"Healthy\", \"Indicator\", \"Description\", \"CommitAffected\", \"Components\",\n" <>
@@ -1422,11 +1462,29 @@ iNormalizeMarkdownFileHead[path_String] :=
   ];
 iNormalizeMarkdownFileHead[_] := False;
 
-(* 末尾が開いたままのコードフェンス (``` が奇数) = 生成が途中で切れた兆候。
-   除去では直せないので警告のみ。以降のレンダリングが全部コードブロックになる。 *)
+(* 末尾が開いたままのコードフェンス = 生成が途中で切れた兆候。
+   除去では直せないので警告のみ。以降のレンダリングが全部コードブロックになる。
+   claudecode.wl iDocFenceUnclosedQ と同じ CommonMark 準拠の開閉追跡:
+   (a) 行頭 (インデント 3 まで) の ``` / ~~~ のみをフェンスとみなす
+       → 文中の ``` (Markdown 自体を説明する doc に出る) を数えない
+   (b) 閉じは開きと同種・同長以上・info string 無しに限る
+       → ```` で囲んだ中の ``` を閉じと誤認しない *)
 iMarkdownUnclosedFenceQ[content_String] :=
-  OddQ @ Length @ Select[StringSplit[content, "\n"],
-    StringStartsQ[StringTrim[#, RegularExpression["[ \t]+"]], "```"] &];
+  Module[{openMark = None, s, mark, rest},
+    Do[
+      s = StringReplace[line, RegularExpression["^[ ]{0,3}"] -> "", 1];
+      If[!StringStartsQ[s, "```" | "~~~"], Continue[]];
+      mark = First @ StringCases[s, RegularExpression["^(`{3,}|~{3,})"]];
+      rest = StringTrim @ StringDrop[s, StringLength[mark]];
+      If[openMark === None,
+        openMark = mark,
+        If[StringTake[mark, 1] === StringTake[openMark, 1] &&
+           StringLength[mark] >= StringLength[openMark] && rest === "",
+          openMark = None]],
+      {line, StringSplit[content, {"\r\n", "\n", "\r"}]}
+    ];
+    openMark =!= None
+  ];
 iMarkdownUnclosedFenceQ[_] := False;
 
 (* ミラー配下の全 .md を検査・正規化し、修正した相対パスのリストを返す *)
@@ -4412,6 +4470,202 @@ PackageLLMMessageGenerator[queryFnSpec_, opts:OptionsPattern[]] := Module[
     ]]
 ];
 
+(* ============================================================
+   GitHub Issues API (読み取り専用)
+   Issue の列挙・取得・コメント・作成者プロファイル・管理下全リポジトリ集約。
+   すべて GET のみでリポジトリを一切変更しない。SourceVault_issues.wl の
+   汎用イシューDB取込 (SourceVaultIssueIngestGitHub) がこの層を供給元とする。
+   ============================================================ *)
+
+(* Issue 応答の正規化。body の JSON null は Null で届くため "" に落とす。
+   GitHub API は PR も issues エンドポイントで返すので IsPullRequest を保持。 *)
+iIssueNormalize[raw_Association, pkg_String, owner_String, repo_String] := <|
+  "Package" -> pkg,
+  "Owner" -> owner,
+  "Repository" -> repo,
+  "Number" -> Lookup[raw, "number", 0],
+  "Title" -> Replace[Lookup[raw, "title", ""], Except[_String] -> ""],
+  "Body" -> Replace[Lookup[raw, "body", ""], Except[_String] -> ""],
+  "State" -> Replace[Lookup[raw, "state", ""], Except[_String] -> ""],
+  "Labels" -> Cases[Replace[Lookup[raw, "labels", {}], Except[_List] -> {}],
+    l_Association :> Lookup[l, "name", ""]],
+  "Author" -> Lookup[Replace[Lookup[raw, "user", <||>], Except[_Association] -> <||>],
+    "login", ""],
+  "AuthorAssociation" -> Replace[Lookup[raw, "author_association", ""],
+    Except[_String] -> ""],
+  "CreatedAt" -> Replace[Lookup[raw, "created_at", ""], Except[_String] -> ""],
+  "UpdatedAt" -> Replace[Lookup[raw, "updated_at", ""], Except[_String] -> ""],
+  "CommentCount" -> Replace[Lookup[raw, "comments", 0], Except[_Integer] -> 0],
+  "URL" -> Replace[Lookup[raw, "html_url", ""], Except[_String] -> ""],
+  "IsPullRequest" -> KeyExistsQ[raw, "pull_request"]|>;
+
+(* 読み取り専用経路のリポジトリ名解決。iResolveRepository[pkg, Automatic] は
+   非 ASCII 名のとき LLM 自動命名 + repo_database.json 書込の副作用を持つため
+   ここでは使わない。DB lookup のみで、未登録の非 ASCII 名は Failure。 *)
+iIssueRepoName[packageName_String, Automatic] := Module[{dbName},
+  dbName = GitHubRepoDBLookup[packageName];
+  If[iIsASCIIName[dbName], dbName,
+    iFailure["RepositoryNameUnresolved",
+      "リポジトリ英語名が repo_database.json に未登録です: " <> packageName,
+      <|"Package" -> packageName|>]]];
+iIssueRepoName[_String, repo_String] := repo;
+
+Options[GitHubListIssues] = {
+  Owner -> Automatic, Repository -> Automatic,
+  MaxItems -> 50, "State" -> "open", "IncludePullRequests" -> False
+};
+
+GitHubListIssues[packageName_String, opts:OptionsPattern[]] :=
+  Module[{token, owner, repo, maxItems, resp, items},
+    token = iAccessToken[];
+    If[FailureQ[token], Return[token]];
+    owner = iResolveOwner[token, OptionValue[Owner], packageName];
+    If[FailureQ[owner], Return[owner]];
+    repo = iIssueRepoName[packageName, OptionValue[Repository]];
+    If[FailureQ[repo], Return[repo]];
+    maxItems = Replace[OptionValue[MaxItems], Except[_Integer?Positive] -> 50];
+    resp = iAPICall["GET",
+      "repos/" <> owner <> "/" <> repo <> "/issues", token, None,
+      <|"state" -> ToString[OptionValue["State"]],
+        "per_page" -> ToString[Min[maxItems, 100]]|>];
+    If[FailureQ[resp], Return[resp]];
+    items = Select[Replace[resp["Body"], Except[_List] -> {}], AssociationQ];
+    If[!TrueQ[OptionValue["IncludePullRequests"]],
+      items = Select[items, !KeyExistsQ[#, "pull_request"] &]];
+    iIssueNormalize[#, packageName, owner, repo] & /@ Take[items, UpTo[maxItems]]
+  ];
+
+Options[GitHubIssueGet] = {Owner -> Automatic, Repository -> Automatic};
+
+GitHubIssueGet[packageName_String, number_Integer, opts:OptionsPattern[]] :=
+  Module[{token, owner, repo, resp},
+    token = iAccessToken[];
+    If[FailureQ[token], Return[token]];
+    owner = iResolveOwner[token, OptionValue[Owner], packageName];
+    If[FailureQ[owner], Return[owner]];
+    repo = iIssueRepoName[packageName, OptionValue[Repository]];
+    If[FailureQ[repo], Return[repo]];
+    resp = iAPICall["GET",
+      "repos/" <> owner <> "/" <> repo <> "/issues/" <> ToString[number], token];
+    If[FailureQ[resp], Return[resp]];
+    If[!AssociationQ[resp["Body"]],
+      Return[iFailure["IssueParseFailed", "Issue 応答を解釈できませんでした。",
+        <|"Package" -> packageName, "Number" -> number|>]]];
+    iIssueNormalize[resp["Body"], packageName, owner, repo]
+  ];
+
+Options[GitHubIssueComments] = {
+  Owner -> Automatic, Repository -> Automatic, MaxItems -> 50
+};
+
+GitHubIssueComments[packageName_String, number_Integer, opts:OptionsPattern[]] :=
+  Module[{token, owner, repo, maxItems, resp, items},
+    token = iAccessToken[];
+    If[FailureQ[token], Return[token]];
+    owner = iResolveOwner[token, OptionValue[Owner], packageName];
+    If[FailureQ[owner], Return[owner]];
+    repo = iIssueRepoName[packageName, OptionValue[Repository]];
+    If[FailureQ[repo], Return[repo]];
+    maxItems = Replace[OptionValue[MaxItems], Except[_Integer?Positive] -> 50];
+    resp = iAPICall["GET",
+      "repos/" <> owner <> "/" <> repo <> "/issues/" <> ToString[number] <> "/comments",
+      token, None, <|"per_page" -> ToString[Min[maxItems, 100]]|>];
+    If[FailureQ[resp], Return[resp]];
+    items = Select[Replace[resp["Body"], Except[_List] -> {}], AssociationQ];
+    Map[Function[c, <|
+      "Author" -> Lookup[Replace[Lookup[c, "user", <||>],
+        Except[_Association] -> <||>], "login", ""],
+      "AuthorAssociation" -> Replace[Lookup[c, "author_association", ""],
+        Except[_String] -> ""],
+      "Body" -> Replace[Lookup[c, "body", ""], Except[_String] -> ""],
+      "CreatedAt" -> Replace[Lookup[c, "created_at", ""], Except[_String] -> ""],
+      "URL" -> Replace[Lookup[c, "html_url", ""], Except[_String] -> ""]|>],
+      Take[items, UpTo[maxItems]]]
+  ];
+
+GitHubIssueAuthorProfile[login_String] :=
+  Module[{token, resp, b},
+    token = iAccessToken[];
+    If[FailureQ[token], Return[token]];
+    resp = iAPICall["GET", "users/" <> login, token];
+    If[FailureQ[resp], Return[resp]];
+    b = Replace[resp["Body"], Except[_Association] -> <||>];
+    <|"Login" -> Lookup[b, "login", login],
+      "Name" -> Replace[Lookup[b, "name", ""], Except[_String] -> ""],
+      "CreatedAt" -> Replace[Lookup[b, "created_at", ""], Except[_String] -> ""],
+      "Followers" -> Replace[Lookup[b, "followers", 0], Except[_Integer] -> 0],
+      "Following" -> Replace[Lookup[b, "following", 0], Except[_Integer] -> 0],
+      "PublicRepos" -> Replace[Lookup[b, "public_repos", 0], Except[_Integer] -> 0],
+      "Bio" -> Replace[Lookup[b, "bio", ""], Except[_String] -> ""],
+      "Company" -> Replace[Lookup[b, "company", ""], Except[_String] -> ""],
+      "HTMLURL" -> Replace[Lookup[b, "html_url", ""], Except[_String] -> ""]|>
+  ];
+
+Options[GitHubIssueAddComment] = {Owner -> Automatic, Repository -> Automatic};
+
+GitHubIssueAddComment[packageName_String, number_Integer, body_String,
+  opts:OptionsPattern[]] :=
+  Module[{token, owner, repo, resp, b},
+    If[StringTrim[body] === "",
+      Return[iFailure["EmptyCommentBody", "コメント本文が空です。"]]];
+    token = iAccessToken[];
+    If[FailureQ[token], Return[token]];
+    owner = iResolveOwner[token, OptionValue[Owner], packageName];
+    If[FailureQ[owner], Return[owner]];
+    repo = iIssueRepoName[packageName, OptionValue[Repository]];
+    If[FailureQ[repo], Return[repo]];
+    resp = iAPICall["POST",
+      "repos/" <> owner <> "/" <> repo <> "/issues/" <> ToString[number] <> "/comments",
+      token, <|"body" -> body|>];
+    If[FailureQ[resp], Return[resp]];
+    b = Replace[resp["Body"], Except[_Association] -> <||>];
+    <|"URL" -> Replace[Lookup[b, "html_url", ""], Except[_String] -> ""],
+      "Id" -> Replace[Lookup[b, "id", 0], Except[_Integer] -> 0],
+      "CreatedAt" -> Replace[Lookup[b, "created_at", ""], Except[_String] -> ""]|>
+  ];
+
+(* 管理下リポジトリの列挙: GithubRepositories/ ミラー (内部フォルダ "_*" を除く)
+   と repo_database.json キーの和集合。ローカル情報のみ (ネットワーク不使用)。 *)
+GitHubManagedRepositories[] :=
+  Module[{db, mirrorRoot, mirrorNames, pkgs},
+    db = Replace[Quiet @ iLoadRepoDB[], Except[_Association] -> <||>];
+    mirrorRoot = FileNameJoin[{iPackageDirectory[], "GithubRepositories"}];
+    mirrorNames = If[DirectoryQ[mirrorRoot],
+      Select[FileNameTake[#, -1] & /@ Select[FileNames["*", mirrorRoot], DirectoryQ],
+        !StringStartsQ[#, "_"] &],
+      {}];
+    pkgs = Sort @ DeleteDuplicates @ Join[mirrorNames, Keys[db]];
+    Map[Function[pkg, <|
+      "Package" -> pkg,
+      "Repository" -> GitHubRepoDBLookup[pkg],
+      "Owner" -> Lookup[Replace[Lookup[db, pkg, <||>],
+        Except[_Association] -> <||>], "owner", Automatic]|>],
+      pkgs]
+  ];
+
+Options[GitHubAllOpenIssues] = {MaxItems -> 50, "IncludePullRequests" -> False};
+
+GitHubAllOpenIssues[opts:OptionsPattern[]] :=
+  Module[{repos, errors = {}, issues},
+    repos = GitHubManagedRepositories[];
+    If[!ListQ[repos], Return[repos]];
+    issues = Flatten @ Map[
+      Function[r, Module[{ls},
+        (* Repository は Automatic のまま iIssueRepoName に検証させる
+           (非 ASCII 未登録名はネットワークに触れず Failure -> Errors 行き) *)
+        ls = GitHubListIssues[r["Package"],
+          Owner -> Replace[Lookup[r, "Owner", Automatic], Except[_String] -> Automatic],
+          MaxItems -> OptionValue[MaxItems],
+          "IncludePullRequests" -> OptionValue["IncludePullRequests"]];
+        Which[
+          FailureQ[ls],
+            AppendTo[errors, <|"Package" -> r["Package"], "Failure" -> ls|>]; {},
+          ListQ[ls], ls,
+          True, {}]]],
+      repos];
+    <|"Issues" -> issues, "RepoCount" -> Length[repos], "Errors" -> errors|>
+  ];
+
 End[];
 EndPackage[];
 
@@ -4441,6 +4695,12 @@ If[Length[Names["NBAccess`$NBTrustedPackageHeads"]] > 0,
          Replace[Lookup[NBAccess`$NBTrustedPackageHeads,
            "GitHubREST`", {}], Except[_List] -> {}],
          (* GitHubServiceStatus は公開ステータスページの GET のみで、
-            リポジトリにも api.github.com にも触れない (トークン不使用)。 *)
-         {"GitHubCommitLog", "GitHubListCommits", "GitHubServiceStatus"}]),
+            リポジトリにも api.github.com にも触れない (トークン不使用)。
+            GitHubListIssues 以下の Issue 系は GET のみの読み取り専用
+            (Issue 本文は未信頼データとして SourceVault_issues 側で
+            pre-scan されるため、取得自体は承認不要)。 *)
+         {"GitHubCommitLog", "GitHubListCommits", "GitHubServiceStatus",
+          "GitHubListIssues", "GitHubIssueGet", "GitHubIssueComments",
+          "GitHubIssueAuthorProfile", "GitHubManagedRepositories",
+          "GitHubAllOpenIssues"}]),
     Null]];

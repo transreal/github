@@ -27,7 +27,7 @@ Options: LocalRepoPath -> Automatic (保存先を明示指定)
 ### GitHubRefreshLocalPackage[packageName, opts]
 `<pkg>.wl` をローカル作業フォルダへコピー(後方互換・単一ファイル用)。グループには GitHubRefreshLocalPackageGroup を使う
 → String(コピー先パス) | Failure
-Options: LocalRepoPath -> Automatic, PackageFile -> Automatic (元 .wl パスを明示)
+Options: LocalRepoPath -> Automatic, PackageFile -> Automatic (元 .wl パスを明示指定)
 
 ## マニフェスト
 upload_manifest.json は `<pkg>_info/upload_manifest.json`。`files`(basename)・`directories`(相対パス)・`excludePatterns` を持つ。
@@ -157,6 +157,42 @@ Options: Owner -> Automatic, Repository -> Automatic, Fallback -> False
 指定コミットの変更を元に戻すリバートコミットを作成
 Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, Fallback -> False
 
+## GitHub Issues API (読み取り専用)
+すべて GET のみでリポジトリを一切変更しない読み取り専用操作。SourceVault の汎用イシューDB取込 (SourceVaultIssueIngestGitHub) の供給元。GitHubIssueAddComment のみ書き込みのため承認ゲート対象。GitHub API は PR も issues エンドポイントで返すため、正規化 issue には `"IsPullRequest"` を保持する。
+
+### GitHubListIssues[packageName, opts]
+リポジトリの Issue を取得し正規化リストで返す
+→ {<|"Package", "Owner", "Repository", "Number", "Title", "Body", "State", "Labels", "Author", "AuthorAssociation", "CreatedAt", "UpdatedAt", "CommentCount", "URL", "IsPullRequest"|>..} | Failure
+Options: Owner -> Automatic, Repository -> Automatic, MaxItems -> 50, "State" -> "open", "IncludePullRequests" -> False (既定で PR を除外)
+例: GitHubListIssues["claudecode"]
+
+### GitHubIssueGet[packageName, number, opts] → Association | Failure
+指定番号の Issue 1 件を正規化 Association で返す
+Options: Owner -> Automatic, Repository -> Automatic
+
+### GitHubIssueComments[packageName, number, opts]
+Issue のコメント一覧を返す
+→ {<|"Author", "AuthorAssociation", "Body", "CreatedAt", "URL"|>..} | Failure
+Options: Owner -> Automatic, Repository -> Automatic, MaxItems -> 50
+
+### GitHubIssueAuthorProfile[login] → Association | Failure
+GitHub ユーザーの公開プロファイルを返す。Issue 作成者の信頼度推定(アカウント年齢・フォロワー数など)に使う
+→ `<|"Login", "Name", "CreatedAt", "Followers", "Following", "PublicRepos", "Bio", "Company", "HTMLURL"|>`
+
+### GitHubManagedRepositories[] → List
+github.wl 管理下のリポジトリ一覧を返す。`GithubRepositories/` ミラーフォルダと repo_database.json の和集合。ローカル情報のみでネットワークに触れない
+→ {<|"Package", "Repository", "Owner"|>..} (Owner は DB 登録があればその値、無ければ Automatic)
+
+### GitHubAllOpenIssues[opts] → Association
+管理下全リポジトリの Open Issue を集約。リポジトリ単位で fail-soft(未作成リポジトリ等はスキップし Errors に記録)。SourceVault の汎用イシューDB取込の供給元
+→ `<|"Issues" -> {正規化 issue..}, "RepoCount", "Errors" -> {<|"Package", "Failure"|>..}|>`
+Options: MaxItems -> 50 (リポジトリ毎), "IncludePullRequests" -> False
+
+### GitHubIssueAddComment[packageName, number, body, opts] → Association | Failure
+Issue へコメントを投稿する。公開リポジトリへの書き込みのため承認ゲート対象(trusted head 非登録)。呼び出し側で内容の秘匿情報(ローカルパス等)を除去してから渡すこと。SourceVaultIssueNotifyGitHub (解決通知) の送信層
+→ `<|"URL", "Id", "CreatedAt"|>`
+Options: Owner -> Automatic, Repository -> Automatic
+
 ## GitHub 稼働状況
 ### GitHubServiceStatus[] / GitHubServiceStatus[key]
 GitHub 稼働状況 (githubstatus.com の公開 Statuspage API、認証不要・GitHub API トークン不使用) を取得する。5xx でコミットが失敗したとき、コード側の不具合か GitHub 側の障害かを切り分けるために使う。読み取り専用でリポジトリは変更しない。key 指定時は該当キーのみ返す
@@ -211,6 +247,5 @@ Owner, Repository, Public, Description, Homepage, AutoInit, GitignoreTemplate, L
 ---
 
 主な変更点(前バージョンとの差分):
-- 新規公開関数 `GitHubServiceStatus[]` / `GitHubServiceStatus[key]` を追加(GitHub 稼働状況、読み取り専用・認証不要)。
-- `PackageCommitPlan` / `PackageCommit` に新オプション `"AllowAckRemoval" -> False`(README の「## 謝辞」節消失ガード)を追加し、`PackageCommitPlan` の戻り値に `AckLossFiles` を追記。
-- 他の関数シグネチャ・オプションはソースコードと一致していることを確認済み(変更なし)。
+- 新規セクション「GitHub Issues API (読み取り専用)」を追加。公開関数 `GitHubListIssues`, `GitHubIssueGet`, `GitHubIssueComments`, `GitHubIssueAuthorProfile`, `GitHubManagedRepositories`, `GitHubAllOpenIssues`, `GitHubIssueAddComment` を新規記載(すべて読み取り専用、`GitHubIssueAddComment` のみ書き込みで承認ゲート対象)。
+- 他の関数シグネチャ・オプション(`GitHubServiceStatus`、`PackageCommitPlan`/`PackageCommit` の `"AllowAckRemoval"` を含む)はソースコードと一致していることを確認済み(変更なし)。
