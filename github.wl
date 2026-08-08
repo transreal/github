@@ -3140,16 +3140,24 @@ GitHubListCommits[packageName_String, opts:OptionsPattern[]] :=
    不正な入力は $Failed。 *)
 iGHLogISODate[None] := None;
 iGHLogISODate[Automatic] := None;
+(* UTC 変換は TimeZoneConvert で行う。旧実装の
+   DateObject[AbsoluteTime[d], TimeZone -> 0] は AbsoluteTime がローカル
+   壁時計秒を返すため +$TimeZone の二重変換ずれを起こし、"...Z" 付き
+   ISO 文字列が 9 時間未来へずれて "Since" フィルタが新しいコミットを
+   取りこぼしていた (2026-08-04 実測: NotifyGitHub の NoCommitAfterResolution 誤判)。 *)
 iGHLogISODate[d_DateObject] :=
   Quiet @ Check[
-    DateString[DateObject[AbsoluteTime[d], TimeZone -> 0],
-      "ISODateTime"] <> "Z", $Failed];
+    DateString[TimeZoneConvert[d, 0], "ISODateTime"] <> "Z", $Failed];
 iGHLogISODate[s_String] :=
-  Module[{d},
-    If[s === "" || !StringMatchQ[s,
+  Module[{t = StringTrim[s], d},
+    If[t === "" || !StringMatchQ[t,
         (DigitCharacter | "-" | "/" | ":" | "T" | "Z" | " " | "." | "+")..],
       Return[$Failed]];
-    d = Quiet @ Check[DateObject[s], $Failed];
+    (* 末尾 Z は UTC 指定: TimeZone -> 0 を明示してパースする *)
+    d = Quiet @ Check[
+      If[StringEndsQ[t, "Z"],
+        DateObject[StringDrop[t, -1], TimeZone -> 0],
+        DateObject[t]], $Failed];
     If[DateObjectQ[d], iGHLogISODate[d], $Failed]];
 iGHLogISODate[_] := $Failed;
 
@@ -4687,20 +4695,16 @@ If[Length[Names["ClaudeOrchestrator`ClaudeWorkflowRegisterHandler"]] > 0,
    ClaudeEval の提案コードから AutoPermit で実行できるよう trusted head に
    登録する (コミット・PR 等の書き込み系 GitHub* は従来どおり承認対象)。 *)
 If[Length[Names["NBAccess`$NBTrustedPackageHeads"]] > 0,
+  (* 2026-08-06: NBAccess 管理変数への直接書換えをやめ、登録 API を通す *)
   Quiet @ Check[
-    (If[!AssociationQ[NBAccess`$NBTrustedPackageHeads],
-       NBAccess`$NBTrustedPackageHeads = <||>];
-     NBAccess`$NBTrustedPackageHeads["GitHubREST`"] =
-       DeleteDuplicates @ Join[
-         Replace[Lookup[NBAccess`$NBTrustedPackageHeads,
-           "GitHubREST`", {}], Except[_List] -> {}],
-         (* GitHubServiceStatus は公開ステータスページの GET のみで、
-            リポジトリにも api.github.com にも触れない (トークン不使用)。
-            GitHubListIssues 以下の Issue 系は GET のみの読み取り専用
-            (Issue 本文は未信頼データとして SourceVault_issues 側で
-            pre-scan されるため、取得自体は承認不要)。 *)
-         {"GitHubCommitLog", "GitHubListCommits", "GitHubServiceStatus",
-          "GitHubListIssues", "GitHubIssueGet", "GitHubIssueComments",
-          "GitHubIssueAuthorProfile", "GitHubManagedRepositories",
-          "GitHubAllOpenIssues"}]),
+    NBAccess`NBRegisterTrustedPackageHeads["GitHubREST`",
+      (* GitHubServiceStatus は公開ステータスページの GET のみで、
+         リポジトリにも api.github.com にも触れない (トークン不使用)。
+         GitHubListIssues 以下の Issue 系は GET のみの読み取り専用
+         (Issue 本文は未信頼データとして SourceVault_issues 側で
+         pre-scan されるため、取得自体は承認不要)。 *)
+      {"GitHubCommitLog", "GitHubListCommits", "GitHubServiceStatus",
+       "GitHubListIssues", "GitHubIssueGet", "GitHubIssueComments",
+       "GitHubIssueAuthorProfile", "GitHubManagedRepositories",
+       "GitHubAllOpenIssues"}],
     Null]];

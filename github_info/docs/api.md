@@ -243,9 +243,3 @@ PackageCommit / PackageCommitPlan の既定コミットメッセージモデル�
 
 ## オプションシンボル一覧
 Owner, Repository, Public, Description, Homepage, AutoInit, GitignoreTemplate, LicenseTemplate, Branch, BaseBranch, CreateBranch, LocalRepoPath, PackageFile, IncludePackageFile, ReturnType, Clean, Force, DeleteMissing, Head, Body, Draft, MaintainerCanModify, Author, Committer, ExtraDirectories, MaxItems, Fallback
-
----
-
-主な変更点(前バージョンとの差分):
-- 新規セクション「GitHub Issues API (読み取り専用)」を追加。公開関数 `GitHubListIssues`, `GitHubIssueGet`, `GitHubIssueComments`, `GitHubIssueAuthorProfile`, `GitHubManagedRepositories`, `GitHubAllOpenIssues`, `GitHubIssueAddComment` を新規記載(すべて読み取り専用、`GitHubIssueAddComment` のみ書き込みで承認ゲート対象)。
-- 他の関数シグネチャ・オプション(`GitHubServiceStatus`、`PackageCommitPlan`/`PackageCommit` の `"AllowAckRemoval"` を含む)はソースコードと一致していることを確認済み(変更なし)。
