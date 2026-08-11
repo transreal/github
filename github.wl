@@ -1118,6 +1118,13 @@ iDiscoverAuxWLFiles[packageName_String] :=
     pkgDir = iPackageDirectory[];
     pattern = packageName <> "_*.wl";
     found = FileNames[pattern, {pkgDir}];
+    (* CodePrivacyLevel > 0 の非公開拡張モジュール (例: SourceVault_course_
+       private.wl) はアップロード候補にしない。ここで除外しないと
+       iEnsureManifest の自動追加が manifest の files へ毎回書き戻し、
+       手動で外しても次回コミットで再追加 → 関所ブロックの無限ループになる
+       (2026-08-11)。明示的に files へ書かれた非公開ファイルは従来どおり
+       iPrivateCodeViolations が遮断する。 *)
+    found = Select[found, iCodePrivacyLevel[#] <= 0 &];
     FileNameTake /@ found
   ];
 
@@ -1624,10 +1631,75 @@ iWithMirrorRollback[packageName_String, localDir_String, body_] :=
     result
   ];
 
+(* ---- 非公開コード関所 ----
+   ファイル先頭付近の機械可読マーカー  (* :CodePrivacyLevel: 0.1 *)  で
+   「ソースコード自体が非公開」を宣言する (0 または無印 = 公開可)。
+   manifest 経由で公開リポジトリへ流れ込むのを fail-closed で遮断する。
+   検出は行頭の正準スタンプ形 ( (* ... *) / <!-- ... --> 完全形) に限る。
+   裸の部分文字列マッチだと、マーカー記法を本文中で説明する生成 doc
+   (github_info/docs/api.md) を誤検出して自己ブロックする (2026-08-11)。 *)
+iCodePrivacyLevel[path_String] := Module[{st, bytes, head},
+  If[! FileExistsQ[path], Return[0]];
+  st = Quiet @ OpenRead[path, BinaryFormat -> True];
+  If[st === $Failed || Head[st] =!= InputStream, Return[0]];
+  bytes = WithCleanup[Quiet @ Check[ReadByteArray[st], $Failed],
+    Quiet @ Close[st]];
+  If[! ByteArrayQ[bytes] || Length[bytes] === 0, Return[0]];
+  head = Quiet @ Check[ByteArrayToString[
+    ByteArray[Take[Normal[bytes], UpTo[4096]]], "UTF-8"], $Failed];
+  (* 4096 バイト目で多バイト文字が切れて UTF-8 デコードに失敗しても、
+     マーカーは ASCII なので Latin-1 で読み直せば検出できる (fail-open 防止) *)
+  If[! StringQ[head], head = Quiet @ Check[ByteArrayToString[
+    ByteArray[Take[Normal[bytes], UpTo[4096]]], "ISO8859-1"], $Failed]];
+  If[! StringQ[head], Return[0]];
+  Replace[StringCases[head,
+      StartOfLine ~~ (" " | "\t") ... ~~ ("(*" | "<!--") ~~ Whitespace ... ~~
+        ":CodePrivacyLevel:" ~~ Whitespace ... ~~ lvl : NumberString ~~
+        Whitespace ... ~~ ("*)" | "-->") :> ToExpression[lvl], 1],
+    {{l_?NumericQ, ___} :> l, _ -> 0}]];
+
+(* manifest 対象 (個別 files + directories 配下の .wl/.m) から
+   CodePrivacyLevel > 0 のファイルを列挙する。
+   directories 配下は excludePatterns 該当分を走査から外す: 除外ファイルは
+   iCopyDirectoryFiltered でコピーされず公開リポジトリへ流れないため、
+   manifest で明示的に除外した非公開 doc (例: SourceVault_info/docs/
+   api_course_private.md) がパッケージ全体のコミットを永久ブロックしない
+   (2026-08-11)。fail-closed は維持: アップロードされ得る対象は全て遮断。
+   個別 files はコピー時に exclude 判定が無いので無条件で検査する。 *)
+iPrivateCodeViolations[packageName_String] := Module[
+  {manifest, pkgDir, files, dirs, excludePatterns, dirCands, cands},
+  manifest = Quiet @ Check[iEnsureManifest[packageName], $Failed];
+  If[! AssociationQ[manifest], Return[{}]];
+  pkgDir = iPackageDirectory[];
+  files = Map[FileNameJoin[{pkgDir, #}] &, Lookup[manifest, "files", {}]];
+  dirs = Select[Lookup[manifest, "directories", {}],
+    DirectoryQ[FileNameJoin[{pkgDir, #}]] &];
+  excludePatterns = iMergedExcludePatterns[packageName];
+  (* .md/.txt も対象: 非公開ソースから生成された doc は claudecode.wl の
+     iSafeWriteDoc が同マーカーを継承させる (<!-- :CodePrivacyLevel: x -->) *)
+  dirCands = Flatten @ Map[
+    Function[dir, Module[{src = FileNameJoin[{pkgDir, dir}]},
+      Select[FileNames[{"*.wl", "*.m", "*.wls", "*.md", "*.txt"}, src, Infinity],
+        ! iMatchExcludePattern[iNormalizeGitPath[
+            dir <> "/" <> FileNameJoin[FileNameDrop[#, FileNameDepth[src]]]],
+          excludePatterns] &]]],
+    dirs];
+  cands = Join[files, dirCands];
+  Select[DeleteDuplicates[cands], iCodePrivacyLevel[#] > 0 &]];
+
 iRefreshPackageGroup[packageName_String, localDir_String] :=
   Module[{manifest, pkgDir, copiedFiles = {}, copiedDirs = {}, excludePatterns,
           deletedFiles = {}, deletedDirFiles = {},
-          src, dst, readmeResult, restoredOriginals, mdHeadFixed},
+          src, dst, readmeResult, restoredOriginals, mdHeadFixed, privateHits},
+    (* 関所: 非公開コード (CodePrivacyLevel > 0) が manifest 対象に居たら
+       何もコピーせず失敗させる (部分反映を作らない) *)
+    privateHits = iPrivateCodeViolations[packageName];
+    If[privateHits =!= {},
+      Return[Failure["PrivateCodeBlocked", <|
+        "MessageTemplate" ->
+          "CodePrivacyLevel > 0 の非公開ファイルが manifest 対象に含まれています。upload_manifest.json から外してください。",
+        "PackageName" -> packageName,
+        "Files" -> Map[FileNameTake, privateHits]|>]]];
     manifest = iEnsureManifest[packageName];
     pkgDir = iPackageDirectory[];
     excludePatterns = iMergedExcludePatterns[packageName];
@@ -1779,6 +1851,13 @@ GitHubValidateManifest[packageName_String] := Module[
       StringContainsQ[ToLowerCase[f], #] &]]];
   If[secretHits =!= {},
     AppendTo[issues, <|"Issue" -> "SuspectSecretFiles", "Files" -> secretHits|>]];
+  (* 非公開コード関所: 先頭マーカー :CodePrivacyLevel: > 0 のファイルは
+     公開リポジトリへコミットできない (refresh 側でも fail-closed で遮断) *)
+  Module[{privHits = iPrivateCodeViolations[packageName]},
+    If[privHits =!= {},
+      AppendTo[issues, <|"Issue" -> "PrivateCodeFiles",
+        "Files" -> Map[FileNameTake, privHits],
+        "Hint" -> "CodePrivacyLevel > 0。upload_manifest.json から外すこと"|>]]];
   <|
     "Status" -> If[issues === {}, "OK", "Issues"],
     "PackageName" -> packageName,

@@ -4,6 +4,10 @@ NBAccess.wl と claudecode.wl と連携する GitHub REST ヘルパー。認証�
 
 共通オプション解決規則: `Owner -> Automatic` は認証トークンの所有ユーザー、`Repository -> Automatic` は packageName(RepoDB 解決後)、`BaseBranch -> Automatic` はリポジトリの default branch、`Branch -> Automatic` は BaseBranch。`Fallback -> True` で Claude Code エラー時のフォールバック(リポジトリ名翻訳など)を許可。ほぼ全公開関数に `Fallback -> False` オプションがある。
 
+非公開コード関所: ファイル先頭付近(4096バイト以内)の機械可読マーカー `(* :CodePrivacyLevel: 0.1 *)`(.md は `<!-- :CodePrivacyLevel: x -->`)で「ソースコード自体が非公開」を宣言できる(0 または無印 = 公開可)。manifest 対象(files + directories 配下の .wl/.m/.wls/.md/.txt)に CodePrivacyLevel > 0 のファイルが含まれると、GitHubRefreshLocalPackageGroup / GitHubRefreshAndCommit / GitHubCreateRepository の内部リフレッシュ処理は何もコピーせず `Failure["PrivateCodeBlocked", ...]` を返し fail-closed で遮断する(部分反映を作らない)。GitHubValidateManifest でも同じ違反を事前検出できる。
+
+Markdown 先頭 `---` ガード: ミラーリフレッシュ時、すべての `.md` ファイルに対し先頭の独立した `---` 行(YAML front matter でないもの)を自動除去する。GitHub はこれを front matter としてパースし本文全体が消えるため。閉じ `---` と `key: value` 行を持つ本物の front matter(Claude Directives の rules/*.md / SKILL.md など)はそのまま通過する。
+
 ## URL 取得
 ### GitHubPackageURL[packageName, opts]
 `$packageDirectory` 内パッケージの GitHub URL を返す
@@ -36,17 +40,18 @@ upload_manifest.json は `<pkg>_info/upload_manifest.json`。`files`(basename)�
 upload_manifest.json を読む。無ければ自動生成しディスク保存。種別(.wl/Paclet)変化時も自動更新。`<|packageName, files, directories, excludePatterns|>`
 
 ### GitHubValidateManifest[packageName] → Association
-配布前検査。files の実在、secret/token/credential/.pid/.heartbeat/.log らしきファイル混入、除外パターンを確認
+配布前検査。files の実在、secret/token/credential/.pid/.heartbeat/.log らしきファイル混入、除外パターン、非公開コード(CodePrivacyLevel > 0)混入を確認
 → `<|Status ("OK"|"Issues"|"Error"), PackageName, FileCount, PresentFileCount, MissingFiles, Directories, ExcludePatterns, Issues|>`
+Issues の Issue 種別: "MissingFiles", "SuspectSecretFiles", "PrivateCodeFiles"(CodePrivacyLevel > 0。upload_manifest.json から外すこと)
 
 ### GitHubRefreshLocalPackageGroup[packageName, opts]
-manifest に基づき対象ファイル・ディレクトリをローカル作業フォルダへコピー。`_info/docs/README.md` をトップ README.md として配置
-→ Association(リフレッシュ結果)
+manifest に基づき対象ファイル・ディレクトリをローカル作業フォルダへコピー。`_info/docs/README.md` をトップ README.md として配置。コピー後すべての `.md` ファイルの先頭偽 front matter `---` を自動除去(本物の front matter は保持)。CodePrivacyLevel > 0 のファイルが manifest 対象に含まれる場合は何もコピーせず `Failure["PrivateCodeBlocked", ...]` を返す
+→ Association(リフレッシュ結果) | Failure
 Options: LocalRepoPath -> Automatic
 
 ## リポジトリ作成
 ### GitHubCreateRepository[packageName, opts]
-GitHub 上に新規リポジトリを作成。既定 private。manifest があれば対象ファイル群をまとめて初回コミット。`_info/docs/README.md` をトップ README.md に配置。作成後 API 反映を待機
+GitHub 上に新規リポジトリを作成。既定 private。manifest があれば対象ファイル群をまとめて初回コミット(非公開コード関所は GitHubRefreshLocalPackageGroup と同様に適用)。`_info/docs/README.md` をトップ README.md に配置。作成後 API 反映を待機
 → `<|Package, Owner, Repository, DefaultBranch, LocalRepoPath, RefreshResult, Response|>` | Failure
 Options: Repository -> Automatic, Public -> False, Description -> "", Homepage -> None, AutoInit -> True, GitignoreTemplate -> None, LicenseTemplate -> None, LocalRepoPath -> Automatic, IncludePackageFile -> True (作成前に manifest ファイルをコピー), PackageFile -> Automatic, ExtraDirectories -> {} (manifest の directories に永続追加), Fallback -> False
 例: GitHubCreateRepository["claudecode", Public -> True, ExtraDirectories -> {"Claude Directives"}]
@@ -77,7 +82,7 @@ pull request を作成
 Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, Head -> Automatic (Automatic は Branch), BaseBranch -> Automatic, Body -> "", Draft -> False, MaintainerCanModify -> True, Fallback -> False
 
 ### GitHubRefreshAndCommit[packageName, message, opts]
-manifest に基づき対象ファイル群をローカルへコピーし GitHub へコミット。`_info/docs/README.md` 変更時はトップ README.md も自動更新
+manifest に基づき対象ファイル群をローカルへコピーし GitHub へコミット。コピー時に `.md` ファイルの先頭偽 front matter `---` を自動除去。`_info/docs/README.md` 変更時はトップ README.md も自動更新。CodePrivacyLevel > 0 のファイルが manifest 対象に含まれる場合はコピー・コミットとも行わず `Failure["PrivateCodeBlocked", ...]` を返す。コミット失敗時はローカルミラー(GithubRepositories/<pkg>)を refresh 前の状態へ自動ロールバックする(次回の差分計算が前回コミット基準からずれないように)
 → Association | Failure
 Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, CreateBranch -> Automatic, LocalRepoPath -> Automatic, DeleteMissing -> False, Force -> False, Author -> Automatic, Committer -> Automatic, ExtraDirectories -> {}, Fallback -> False
 
@@ -134,7 +139,7 @@ Options: Owner -> Automatic, Repository -> Automatic, Fallback -> False
 
 ## コミット履歴
 ### GitHubCommitLog[packageName, opts]
-コミット履歴を日付範囲付きで取得しコンパクト形式で返す。読み取り専用・リポジトリ無変更のため**承認不要 (AutoPermit)**。「いつ何が追加/変更されたか」「6/20 以降の変更は?」のような更新履歴・changelog の質問はまずこれを使う (GithubRepositories/ は .git を持たないミラーなので、git log の代わりに常にこの関数を使う)
+コミット履歴を日付範囲付きで取得しコンパクト形式で返す。読み取り専用・リポジトリ無変更のため**承認不要 (AutoPermit)**。「いつ何が追加/変更されたか」「6/20 以降の変更は?」のような更新履歴・changelog の質問はまずこれを使う (GithubRepositories/ は .git を持たないミラーなので、git log の代わりに常にこの関数を使う)。`"Since"`/`"Until"` の日付は `TimeZoneConvert` で正確に UTC 変換する(JST 環境で mtime ずれを起こす旧実装バグ修正済み)
 → {<|"SHA", "Date" (DateObject), "Author", "Message"|>..} | Failure
 Options: MaxItems -> 50, "Since" -> None ("2026-06-20" 形式文字列 or DateObject), "Until" -> None, Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, Fallback -> False
 例: GitHubCommitLog["SourceVault", "Since" -> "2026-06-20"]
@@ -190,7 +195,6 @@ Options: MaxItems -> 50 (リポジトリ毎), "IncludePullRequests" -> False
 
 ### GitHubIssueAddComment[packageName, number, body, opts] → Association | Failure
 Issue へコメントを投稿する。公開リポジトリへの書き込みのため承認ゲート対象(trusted head 非登録)。呼び出し側で内容の秘匿情報(ローカルパス等)を除去してから渡すこと。SourceVaultIssueNotifyGitHub (解決通知) の送信層
-→ `<|"URL", "Id", "CreatedAt"|>`
 Options: Owner -> Automatic, Repository -> Automatic
 
 ## GitHub 稼働状況
@@ -204,7 +208,7 @@ Options: "Timeout" -> 20
 GitHubRefreshAndCommit の前段。docs 鮮度ゲート → 前回コミット差分 → コミットメッセージ案 → DryRun 既定駆動。
 
 ### PackageDocsFreshnessGate[packageName] → Association
-`<pkg>_info/docs` 配下の api.md / api_*.md が対応 .wl 以降に更新されているか検査。対応規則: api.md↔`<pkg>.wl`、api_<sfx>.md↔`<pkg>_<sfx>.wl`。1つでも古ければ Proceed -> False。docs 無しは Proceed -> True
+`<pkg>_info/docs` 配下の api.md / api_*.md が対応 .wl 以降に更新されているか検査。対応規則: api.md↔`<pkg>.wl`、api_<sfx>.md↔`<pkg>_<sfx>.wl`。補助ソース(.wl)の内容ハッシュが `.aux_source_hashes.json` に記録済みの場合は内容基準で判定(Dropbox 同期等による mtime 揺れを無視)し、未記録時のみ mtime にフォールバック。1つでも古ければ Proceed -> False。docs 無しは Proceed -> True
 → `<|Status, Package, Proceed, Checked, StaleDocs (各 <|Doc,Wl,DocDate,WlDate|>), DocsDir|>`
 
 ### PackageCommitDiff[packageName] → Association
