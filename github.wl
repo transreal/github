@@ -193,9 +193,11 @@ GitHubInstallPackage::usage =
   "\:4f8b: GitHubInstallPackage[\"pkg\", \"https://github.com/user/repo\"]\n" <>
   "\:30a4\:30f3\:30b9\:30c8\:30fc\:30eb\:5f8c\:306f GitHubUpdatePackage/GitHubCommitDataset/GitHubSubmitPullRequest \:7b49\:304c\n" <>
   "\:30d1\:30c3\:30b1\:30fc\:30b8\:540d\:3060\:3051\:3067\:30ea\:30e2\:30fc\:30c8\:30ea\:30dd\:30b8\:30c8\:30ea\:306b\:5bfe\:3057\:3066\:52d5\:4f5c\:3059\:308b\:3002\n" <>
-  "\:30aa\:30d7\:30b7\:30e7\:30f3 Owner, Repository, Branch \:6307\:5b9a\:53ef\:80fd\:3002";
+  "\:30aa\:30d7\:30b7\:30e7\:30f3 Owner, Repository, Branch \:6307\:5b9a\:53ef\:80fd\:3002\n" <>
+  "既にローカルにソースが存在する場合は上書きせず失敗する (更新は GitHubUpdatePackage、強制上書きは \"Overwrite\" -> True)。";
 GitHubUpdatePackage::usage =
-  "GitHubUpdatePackage[packageName] \:306f\:65e2\:5b58\:30d1\:30c3\:30b1\:30fc\:30b8\:3092 GitHub \:306e\:6700\:65b0\:306b\:66f4\:65b0\:3059\:308b\:3002";
+  "GitHubUpdatePackage[packageName] \:306f\:65e2\:5b58\:30d1\:30c3\:30b1\:30fc\:30b8\:3092 GitHub \:306e\:6700\:65b0\:306b\:66f4\:65b0\:3059\:308b\:3002\n" <>
+  "ローカルの未コミット変更は GitHub の内容で上書きされるので注意。";
 
 GitHubListPullRequests::usage =
   "GitHubListPullRequests[packageName] \:306f\:30aa\:30fc\:30d7\:30f3\:306a PR \:4e00\:89a7\:3092\:7dca\:6025\:5ea6\:30fb\:4f9d\:5b58\:95a2\:4fc2\:3067\:30bd\:30fc\:30c8\:3057\:3066\:8fd4\:3059\:3002";
@@ -2710,13 +2712,25 @@ iResolveRepository[packageName_String, Automatic] :=
 Options[GitHubInstallPackage] = {
   Owner -> Automatic, Repository -> Automatic,
   Branch -> Automatic, BaseBranch -> Automatic,
-  Fallback -> False
+  Fallback -> False, "Overwrite" -> Automatic
 };
 
 GitHubInstallPackage[packageName_String, opts:OptionsPattern[]] :=
   Module[{token, owner, repo, baseBranch, branch, localDir,
           pullResult, pkgDir, manifest, files, dirs, src, dst, installed = {},
           isPaclet, isRemote, hasInfoDir},
+    pkgDir = iPackageDirectory[];
+    (* 上書きガード: ライブソースが既に存在する場合は初回インストールしない。
+       未コミットのローカル変更が GitHub HEAD で消えるのを防ぐ。
+       更新は GitHubUpdatePackage 経由 ("Overwrite" -> True が渡る)。 *)
+    If[OptionValue["Overwrite"] =!= True &&
+       FileExistsQ[FileNameJoin[{pkgDir, packageName <> ".wl"}]],
+      Return[iFailure["PackageAlreadyInstalled",
+        "パッケージ " <> packageName <> " のソースが既に " <> pkgDir <>
+        " に存在するため、初回インストールを中止しました。GitHub の最新へ更新するには GitHubUpdatePackage[\"" <>
+        packageName <> "\"] を、ローカルを強制上書きするには \"Overwrite\" -> True を使ってください" <>
+        " (未コミットのローカル変更は上書きで失われます)。",
+        <|"Package" -> packageName, "InstallTarget" -> pkgDir|>]]];
     token = iAccessToken[];
     If[FailureQ[token], Return[token]];
     owner = iResolveOwner[token, OptionValue[Owner], packageName];
@@ -2732,7 +2746,6 @@ GitHubInstallPackage[packageName_String, opts:OptionsPattern[]] :=
     baseBranch = iResolveBaseBranch[token, owner, repo, OptionValue[BaseBranch]];
     If[FailureQ[baseBranch], Return[baseBranch]];
     branch = iResolveBranch[OptionValue[Branch], baseBranch];
-    pkgDir = iPackageDirectory[];
     (* GithubRepositories へ pull *)
     localDir = GitHubEnsureLocalRepo[packageName];
     pullResult = GitHubPull[packageName, Owner -> owner, Repository -> repo,
@@ -2864,7 +2877,7 @@ GitHubInstallPackage[packageName_String, opts:OptionsPattern[]] :=
 
 (* URL 付き2引数版: 他人のリポジトリからインストール *)
 GitHubInstallPackage[packageName_String, url_String, opts:OptionsPattern[]] :=
-  Module[{parsed, remoteOwner, remoteRepo},
+  Module[{parsed, remoteOwner, remoteRepo, result},
     parsed = iParseGitHubURL[url];
     If[FailureQ[parsed],
       Return[iFailure["InvalidURL",
@@ -2872,24 +2885,28 @@ GitHubInstallPackage[packageName_String, url_String, opts:OptionsPattern[]] :=
         "\n\:5f62\:5f0f: https://github.com/owner/repo"]]];
     remoteOwner = parsed["owner"];
     remoteRepo = parsed["repo"];
-    (* RepoDB に owner + repository を登録 *)
+    (* Owner と Repository を明示的に指定して既存の InstallPackage に委譲 *)
+    result = GitHubInstallPackage[packageName,
+      Owner -> remoteOwner, Repository -> remoteRepo,
+      Sequence @@ FilterRules[{opts}, Except[Owner | Repository]]];
+    (* RepoDB への owner + repository 登録はインストール成功後に行う。
+       存在しないリポジトリ (404) でも先に登録すると、以後の PackageCommit 等が
+       誤った owner を参照し続けてしまう (プレースホルダ URL 事故対策) *)
+    If[FailureQ[result], Return[result]];
     GitHubRepoDBSet[packageName, remoteRepo, remoteOwner];
     Print["\:30ea\:30e2\:30fc\:30c8\:30ea\:30dd\:30b8\:30c8\:30ea\:3092\:767b\:9332: " <> remoteOwner <> "/" <> remoteRepo <>
       " \[RightArrow] " <> packageName];
-    (* Owner と Repository を明示的に指定して既存の InstallPackage に委譲 *)
-    GitHubInstallPackage[packageName,
-      Owner -> remoteOwner, Repository -> remoteRepo,
-      Sequence @@ FilterRules[{opts}, Except[Owner | Repository]]]
+    result
   ];
 
 Options[GitHubUpdatePackage] = {
   Owner -> Automatic, Repository -> Automatic,
   Branch -> Automatic, BaseBranch -> Automatic,
-  Fallback -> False
+  Fallback -> False, "Overwrite" -> True
 };
 
 GitHubUpdatePackage[packageName_String, opts:OptionsPattern[]] :=
-  GitHubInstallPackage[packageName, opts];
+  GitHubInstallPackage[packageName, opts, "Overwrite" -> True];
 
 (* ============================================================
    プルリクエスト管理

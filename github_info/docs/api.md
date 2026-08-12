@@ -105,13 +105,13 @@ DB からリポジトリ名を解決。未登録なら packageName をそのま�
 
 ## インストール / 更新
 ### GitHubInstallPackage[packageName, opts] / GitHubInstallPackage[packageName, url, opts]
-GitHub から `$packageDirectory` へ初回ダウンロード。url 指定で他人のリポジトリからインストール。インストール後は packageName だけで以降の操作が可能。リモート判定により自分/リモート+_info/リモート単純の3パターンでコピー
+GitHub から `$packageDirectory` へ初回ダウンロード。url 指定で他人のリポジトリからインストール。インストール後は packageName だけで以降の操作が可能。リモート判定により自分/リモート+_info/リモート単純の3パターンでコピー。ライブソース(`<pkg>.wl`)が既に `$packageDirectory` に存在する場合は上書きせず `Failure["PackageAlreadyInstalled", ...]` を返す(未コミットのローカル変更保護)。GitHub の最新へ更新するには GitHubUpdatePackage、ローカルを強制上書きするには `"Overwrite" -> True` を使う
 → Association | Failure
-Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, Fallback -> False
+Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, Fallback -> False, "Overwrite" -> Automatic (True で既存ローカルソースの上書きを許可)
 例: GitHubInstallPackage["pkg", "https://github.com/user/repo"]
 
 ### GitHubUpdatePackage[packageName, opts] → Association | Failure
-既存パッケージを GitHub の最新に更新。実体は GitHubInstallPackage への委譲
+既存パッケージを GitHub の最新に更新。実体は GitHubInstallPackage への委譲(内部で `"Overwrite" -> True` を渡す)。ローカルの未コミット変更は GitHub の内容で上書きされるので注意
 Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, Fallback -> False
 
 ## プルリクエスト管理
