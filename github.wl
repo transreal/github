@@ -147,13 +147,20 @@ Force::usage =
   "Force は ref 更新時に fast-forward 制約を無視するかどうか。\n" <>
   "既定値は False。";
 
-DeleteMissing::usage =
-  "DeleteMissing は GitHubCommit 時にローカルに存在しないリモート blob を\n" <>
-  "削除対象として tree に含めるかどうか。既定値は False。";
+(* DeleteMissing / Head / MaxItems は System` の組み込みシンボルを option キーとして
+   流用している (DeleteMissing, Head は組み込み関数、MaxItems は Dataset 等の option)。
+   組み込みシンボルは Protected でも ::usage は上書きできてしまい、以前ここで
+   `DeleteMissing::usage = ...` / `Head::usage = ...` / `MaxItems::usage = ...` と
+   していたため NB の ?Head 等が github.wl の説明に化けていた。組み込みの usage を
+   壊さないよう ::usage は付けず、説明はコメントと各関数の usage に置く。
+   (注意: 別パッケージから GitHubREST`MaxItems のように修飾して参照すると存在しない
+   別シンボルが生成され System`MaxItems を shadow するので、修飾なしで書くこと。)
 
-Head::usage =
-  "Head は pull request の head を指定するオプション。\n" <>
-  "Automatic の場合は Branch を使う。";
+   DeleteMissing: GitHubCommit 時にローカルに存在しないリモート blob を
+     削除対象として tree に含めるかどうか。既定値は False。
+   Head: pull request の head を指定するオプション。Automatic の場合は Branch を使う。
+   MaxItems: GitHubListCommits/GitHubCommitDataset/GitHubCommitLog/GitHubListIssues 等で
+     取得する件数の上限。既定値は関数ごと (30 または 50)。 *)
 
 Body::usage =
   "Body は pull request 本文。";
@@ -229,8 +236,8 @@ GitHubReviewCommit::usage =
   "GitHubReviewCommit[packageName, sha] \:306f\:6307\:5b9a\:30b3\:30df\:30c3\:30c8\:306e\:8a73\:7d30\:30fb\:5dee\:5206\:3092\:30ce\:30fc\:30c8\:30d6\:30c3\:30af\:306b\:8868\:793a\:3059\:308b\:3002";
 GitHubRevertCommit::usage =
   "GitHubRevertCommit[packageName, sha] \:306f\:6307\:5b9a\:30b3\:30df\:30c3\:30c8\:306e\:5909\:66f4\:3092\:5143\:306b\:623b\:3059\:30ea\:30d0\:30fc\:30c8\:30b3\:30df\:30c3\:30c8\:3092\:4f5c\:6210\:3059\:308b\:3002";
-MaxItems::usage =
-  "MaxItems \:306f GitHubListCommits/GitHubCommitDataset \:3067\:53d6\:5f97\:3059\:308b\:30b3\:30df\:30c3\:30c8\:6570\:306e\:4e0a\:9650\:3002\:65e2\:5b9a\:5024\:306f 30\:3002";
+(* MaxItems (System`MaxItems) の ::usage は定義しない (組み込み usage を上書きしてしまうため)。
+   説明は上部の DeleteMissing/Head/MaxItems コメントと各関数 usage を参照。 *)
 
 GitHubListIssues::usage =
   "GitHubListIssues[packageName] はリポジトリの Issue を取得し正規化リスト\n" <>
@@ -391,14 +398,14 @@ ClearAll[
   iBranchReadFailure, iRepositoryURL, iSlugifyBranchName, iAutoPRBranchName,
   iForceASCIIJSON, iEncodeJSONBody,
   iManifestPath, iDefaultManifest, iReadManifest, iWriteManifest,
-  iEnsureManifest, iDetectPackageType, iDiscoverAuxWLFiles,
+  iEnsureManifest, iDetectPackageType, iDiscoverAuxWLFiles, iConflictedCopyFileQ,
   iCopyDirectoryFiltered, iAddExtraDirectories,
   iRefreshPackageGroup, iSyncReadme, iMatchExcludePattern, iInfoDirName,
   iLocalSnapshotDir, iSaveLocalSnapshot, iRestoreLocalSnapshot,
   iCopyLocalRepoToPackageDir, iCleanManifestFilesInPkgDir,
   iDetectNewerThanSnapshot, iSnapshotHashPath,
   iDefaultExcludePatterns, iMergedExcludePatterns,
-  iCopyDirectoryPreservingExcluded, iCleanStaleLocalFiles,
+  iCopyDirectoryPreservingExcluded, iCleanStaleLocalFiles, iMirrorRootOrphans,
   iTranslateToEnglishRepoName, iSlugifyRepoName, iCheckRepoExists,
   iParseGitHubURL, iRepoDBOwnerLookup,
   iIsRemotePackage, iOriginalsDir, iSaveOriginals, iLoadOriginals,
@@ -1112,6 +1119,17 @@ iRestoreOriginalsToRepo[packageName_String, localRepoDir_String] :=
 iManifestPath[packageName_String] :=
   FileNameJoin[{iPackageDirectory[], iInfoDirName[packageName], "upload_manifest.json"}];
 
+(* Dropbox / OneDrive の同期競合コピーかをファイル名で判定する。
+   claudecode.wl 側の同名ヘルパーと同じ基準 (context が別なので定義を持つ)。 *)
+iConflictedCopyFileQ[path_String] :=
+  With[{name = FileNameTake[path]},
+    AnyTrue[{"conflicted copy", "競合コピー", "case conflict",
+             "copia en conflicto", "copie en conflit", "copia in conflitto",
+             "cópia em conflito", "in konflikt stehende kopie",
+             "충돌 사본", "冲突副本", "衝突複本"},
+      StringContainsQ[name, #, IgnoreCase -> True] &]];
+iConflictedCopyFileQ[___] := False;
+
 (* $packageDirectory 内の補助 .wl ファイルを検出する。
    packageName_*.wl にマッチするファイル名のリストを返す。
    (packageName.wl 本体は除く) *)
@@ -1120,6 +1138,11 @@ iDiscoverAuxWLFiles[packageName_String] :=
     pkgDir = iPackageDirectory[];
     pattern = packageName <> "_*.wl";
     found = FileNames[pattern, {pkgDir}];
+    (* Dropbox 等の同期競合コピー
+       (SourceVault_mcp (Rapterlake4T の競合コピー 2026-08-13).wl など) は
+       補助モジュールではなく同期事故の産物。除外しないと iEnsureManifest の
+       自動追加が manifest の files へ書き戻し、GitHub へゴミを公開してしまう (2026-08-21)。 *)
+    found = Select[found, !iConflictedCopyFileQ[#] &];
     (* CodePrivacyLevel > 0 の非公開拡張モジュール (例: SourceVault_course_
        private.wl) はアップロード候補にしない。ここで除外しないと
        iEnsureManifest の自動追加が manifest の files へ毎回書き戻し、
@@ -1385,6 +1408,30 @@ iCopyDirectoryFiltered[srcDir_String, dstBaseDir_String, relBase_String, exclude
 
 (* ソース側で削除されたファイルをローカルレポの各マニフェストディレクトリから削除する。
    copiedDirFiles に含まれず exclude にも該当しないファイルが対象。 *)
+(* 公開対象から外れたのにミラーのルートに残り続けるファイルを列挙する (2026-08-21)。
+   manifest の files から外しても (例: test codes/ のテストを非公開にしたとき)、
+   個別ファイルのコピー/削除ループも iCleanStaleLocalFiles も「今の files / directories」しか
+   走査しないため、一度コミットされたファイルはミラーにも GitHub にも残り続けていた。
+   誤爆を避けるため、個別ファイルとして公開しうる拡張子だけを対象にし、
+   README.md / ドット始まり / アンダースコア始まり (.git, _snapshot_hashes.json 等) は必ず残す。 *)
+$iMirrorRootSweepExtensions = {"wl", "m", "wls", "py", "nb"};
+
+iMirrorRootOrphans[localDir_String, manifest_Association, keepExtra_List] :=
+  Module[{keep, rootFiles},
+    If[!DirectoryQ[localDir], Return[{}]];
+    keep = Join[
+      FileNameTake /@ Lookup[manifest, "files", {}],
+      {"README.md"},
+      FileNameTake /@ keepExtra];
+    rootFiles = Select[FileNames["*", localDir], !DirectoryQ[#] &];
+    Select[rootFiles,
+      Function[f, Module[{name = FileNameTake[f]},
+        !StringStartsQ[name, "."] && !StringStartsQ[name, "_"] &&
+        !MemberQ[keep, name] &&
+        MemberQ[$iMirrorRootSweepExtensions, ToLowerCase[FileExtension[name]]]]]]
+  ];
+iMirrorRootOrphans[___] := {};
+
 iCleanStaleLocalFiles[localDir_String, manifestDirs_List, copiedDirFiles_List, excludePatterns_List] :=
   Module[{deletedFiles = {}, dirInLocal, allLocal, relPath},
     Do[
@@ -1691,7 +1738,7 @@ iPrivateCodeViolations[packageName_String] := Module[
 
 iRefreshPackageGroup[packageName_String, localDir_String] :=
   Module[{manifest, pkgDir, copiedFiles = {}, copiedDirs = {}, excludePatterns,
-          deletedFiles = {}, deletedDirFiles = {},
+          deletedFiles = {}, deletedDirFiles = {}, rootOrphans = {},
           src, dst, readmeResult, restoredOriginals, mdHeadFixed, privateHits},
     (* 関所: 非公開コード (CodePrivacyLevel > 0) が manifest 対象に居たら
        何もコピーせず失敗させる (部分反映を作らない) *)
@@ -1739,6 +1786,11 @@ iRefreshPackageGroup[packageName_String, localDir_String] :=
     (* コミット直前ガード: GitHub が YAML front matter と誤認する先頭 --- を除去。
        README 同期の後に走らせ、docs/README.md とトップ README.md の両方を掃除する *)
     mdHeadFixed = iSanitizeMirrorMarkdown[localDir];
+    (* manifest の files から外れたのにミラールートに残っているファイルを掃除する。
+       これをやらないと GitHubCommit の DeleteMissing からも見えず、非公開にしたはずの
+       ファイルが公開リポジトリに残り続ける (2026-08-21)。 *)
+    rootOrphans = iMirrorRootOrphans[localDir, manifest, restoredOriginals];
+    Scan[Quiet @ DeleteFile[#] &, rootOrphans];
     <|
       "Package" -> packageName,
       "LocalRepoPath" -> localDir,
@@ -1747,6 +1799,7 @@ iRefreshPackageGroup[packageName_String, localDir_String] :=
       "CopiedDirectoryFiles" -> copiedDirs,
       "DeletedFiles" -> deletedFiles,
       "DeletedDirFiles" -> deletedDirFiles,
+      "DeletedRootOrphans" -> (FileNameTake /@ rootOrphans),
       "RestoredOriginals" -> restoredOriginals,
       "READMESynced" -> readmeResult,
       "MarkdownHeadFixed" -> mdHeadFixed
@@ -4122,6 +4175,9 @@ PackageCommitDiff[pkg_String] := Module[
               AppendTo[removed, rel]]],
           {f, snapFiles}]]],
     {dir, dirs}];
+  (* --- removed (root): manifest files から外れてスナップショットルートに残ったもの --- *)
+  Do[AppendTo[removed, FileNameTake[f]],
+    {f, iMirrorRootOrphans[snapDir, manifest, {}]}];
   removed = DeleteDuplicates[removed];
   <|
     "Status" -> "OK", "Package" -> pkg,

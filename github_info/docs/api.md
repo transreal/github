@@ -208,8 +208,8 @@ Options: "Timeout" -> 20
 GitHubRefreshAndCommit の前段。docs 鮮度ゲート → 前回コミット差分 → コミットメッセージ案 → DryRun 既定駆動。
 
 ### PackageDocsFreshnessGate[packageName] → Association
-`<pkg>_info/docs` 配下の api.md / api_*.md が対応 .wl 以降に更新されているか検査。対応規則: api.md↔`<pkg>.wl`、api_<sfx>.md↔`<pkg>_<sfx>.wl`。補助ソース(.wl)の内容ハッシュが `.aux_source_hashes.json` に記録済みの場合は内容基準で判定(Dropbox 同期等による mtime 揺れを無視)し、未記録時のみ mtime にフォールバック。1つでも古ければ Proceed -> False。docs 無しは Proceed -> True
-→ `<|Status, Package, Proceed, Checked, StaleDocs (各 <|Doc,Wl,DocDate,WlDate|>), DocsDir|>`
+`<pkg>_info/docs` 配下の api.md / api_*.md が対応 .wl 以降に更新されているか検査。対応規則: api.md↔`<pkg>.wl`、api_<sfx>.md↔`<pkg>_<sfx>.wl`。補助ソース(.wl)の内容ハッシュが `.aux_source_hashes.json` に記録済みの場合は内容基準で判定(Dropbox 同期等による mtime 揺れを無視)し、未記録時のみ mtime にフォールバック。1つでも古ければ Proceed -> False。docs フォルダが無ければ Status -> "NoDocs" で Proceed -> True
+→ `<|Status ("OK"|"NoDocs"|"Failed"), Package, Proceed, Checked, StaleDocs (各 <|Doc,Wl,DocDate,WlDate|>), DocsDir|>`
 
 ### PackageCommitDiff[packageName] → Association
 現ソースと前回コミットスナップショット(`GithubRepositories/<pkg>`)を ReadOnly に内容比較。manifest を直接 Import(GitHubReadManifest は呼ばない)。リフレッシュ前に呼ぶこと
@@ -217,8 +217,8 @@ GitHubRefreshAndCommit の前段。docs 鮮度ゲート → 前回コミット�
 
 ### PackageCommitPlan[packageName, opts] → Association
 鮮度ゲート → 差分 → メッセージ案 を ReadOnly に組み立て(実コミットなし)。docs 古ければ Status -> Blocked、差分無しは Status -> NoChange、README の「## 謝辞」節が前回コミットから消える場合も既定で Status -> Blocked(AllowAckRemoval で解除可)、すべて OK で Status -> OK + CommitMessage
-→ `<|Status, Package, Proceed, (StaleDocs | AckLossFiles | Diff | CommitMessage), ...|>`
 Options: "MessageGenerator" -> Automatic (Automatic は $PackageCommitModel で分岐。固定文字列 | fn[diffAssoc]->String も可), "SkipDocsGate" -> False (True で鮮度ゲート無視、OK 結果に StaleDocs 警告 + DocsGateSkipped), "AllowAckRemoval" -> False (True で README の「## 謝辞」節消失によるブロックを解除)
+→ `<|Status, Package, Proceed, (StaleDocs | AckLossFiles | Diff | CommitMessage), ...|>`
 
 ### PackageCommit[packageName, opts] → Association
 メイン駆動関数。PackageCommitPlan 実行後、Status -> OK のとき GitHubRefreshAndCommit を呼ぶ
