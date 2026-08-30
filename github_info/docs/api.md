@@ -242,7 +242,7 @@ MIT ライセンスの著作権者名。空文字列の場合ライセンスセ�
 
 ### $PackageCommitModel
 型: Automatic | None | モデル指定子({provider,model} 例 $iModelSonnet、またはモデル名 String) | (prompt->String 関数), 初期値: Automatic
-PackageCommit / PackageCommitPlan の既定コミットメッセージモデル。既定 Automatic では claudecode がロード済みなら周囲の既定モデルで差分内容を要約した LLM メッセージを生成し、未ロード/失敗時は決定論的なファイル名列挙にフォールバックする。特定モデルを使うにはモデル指定子か prompt->文字列 関数を代入する。None を代入すると LLM を呼ばず決定論メッセージに固定する。再ロードで値を保持する
+PackageCommit / PackageCommitPlan の既定コミットメッセージモデル。既定 Automatic では claudecode がロード済みなら周囲の既定モデルで差分内容を要約した LLM メッセージを生成し、未ロード/失敗時は決定論的なファイル名列挙にフォールバックする。特定モデルを使うにはモデル指定子か prompt->文字列 関数を代入する。README の「## 謝辞」節が消えるコミットは既定で Blocked。意図的削除時のみ True)
 例: $PackageCommitModel = $iModelSonnet; PackageCommit["claudecode", "DryRun" -> True]["CommitMessage"]
 
 ## オプションシンボル一覧

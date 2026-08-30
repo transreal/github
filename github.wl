@@ -4855,8 +4855,23 @@ If[Length[Names["NBAccess`$NBTrustedPackageHeads"]] > 0,
          GitHubListIssues 以下の Issue 系は GET のみの読み取り専用
          (Issue 本文は未信頼データとして SourceVault_issues 側で
          pre-scan されるため、取得自体は承認不要)。 *)
+      (* 2026-08-30: Package* の読み取り専用 3 種を追加。同じ「読むだけの
+         関数に承認は不要」方針の適用漏れだった。実機で flash-next が
+         PackageDocsFreshnessGate を診断目的で呼び、セル全体が
+         UnknownHeadRequiresApproval で止まっていた。
+
+         いずれも実装を確認済みで Export / Put / OpenWrite / CopyFile /
+         DeleteFile / URL* / *Process を一切含まない:
+         - PackageDocsFreshnessGate: docs と .wl の日時比較のみ。"Gate" の
+           名だが強制はせず Proceed を報告するだけで、呼んでも何も公開されない。
+         - PackageCommitDiff:  前回コミットとの差分を ReadOnly に計算。
+         - PackageCommitPlan:  ゲート → 差分 → メッセージ案。実コミットはしない。
+
+         書き込み系 (PackageCommit / GitHubRefreshAndCommit) は承認対象のまま。
+         PackageCommit は DryRun 既定でも実コミットに至る経路を持つため入れない。 *)
       {"GitHubCommitLog", "GitHubListCommits", "GitHubServiceStatus",
        "GitHubListIssues", "GitHubIssueGet", "GitHubIssueComments",
        "GitHubIssueAuthorProfile", "GitHubManagedRepositories",
-       "GitHubAllOpenIssues"}],
+       "GitHubAllOpenIssues",
+       "PackageDocsFreshnessGate", "PackageCommitDiff", "PackageCommitPlan"}],
     Null]];
