@@ -64,6 +64,8 @@ NBGetAPIKey["github"]
 GitHubPackageURLs[]
 ```
 
+`GitHubPackageURLs[]` はトークン取得・リポジトリ名データベース読み込み・既定 owner の解決 (`GET /user`) を全体で 1 回ずつだけ行うため、$packageDirectory に多数のパッケージがあっても高速に一覧を返します（結果は各パッケージを個別に `GitHubPackageURL` で呼んだ場合と同じです）。
+
 ## ディレクトリ構造
 
 GitHubパッケージは以下のディレクトリ構造を使用します：
@@ -84,6 +86,8 @@ $packageDirectory/
 なお、`GithubRepositories/[packageName]/` は GitHub へのアップロード内容であると同時に、**前回コミット時のスナップショット**としても機能します。`PackageCommitDiff` / `PackageCommit` はこのスナップショットと現ソースを内容比較して差分を求めるため、リフレッシュ前に呼び出す必要があります。
 
 `[packageName]_info/docs/docs/` のようなネストした重複フォルダは、マニフェストの有無にかかわらず常にデフォルト除外パターンで保護されます。過去の同期事故に由来する残骸で、混入すると pull のたびにローカルへ再生成されてしまうため、必要であれば手動で削除してください（自動削除はされません）。
+
+`[packageName]_info/docs/README.md` が存在する場合、`GitHubRefreshLocalPackageGroup` / `GitHubCreateRepository` / `GitHubRefreshAndCommit` はこれをリポジトリのトップレベル `README.md` としても配置します。`docs/README.md` 内の本文は docs フォルダ基準の相対リンク（`api.md` や `examples/...` など）で書かれているため、そのままトップレベルに置くとリンク切れになります。これを避けるため、ルート用コピーに限り相対リンクのリンク先へ `<packageName>_info/docs/` を前置してリポジトリルート基準に張り直します（`docs/README.md` 本体は変更されません）。張り直した結果が実際にはミラー内に存在しないファイルを指す場合は、誤ったリンク書き換えを避けるため元のリンクのまま保持されます。
 
 ## 次のステップ
 

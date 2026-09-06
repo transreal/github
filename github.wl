@@ -32,7 +32,9 @@ GitHubReadManifest::usage =
 GitHubRefreshLocalPackageGroup::usage =
   "GitHubRefreshLocalPackageGroup[packageName] は upload_manifest.json に基づき\n" <>
   "対象ファイル・ディレクトリをローカル GitHub 作業フォルダへコピーする。\n" <>
-  "_info/docs/README.md が存在すればトップレベル README.md として配置する。";
+  "_info/docs/README.md が存在すればトップレベル README.md として配置する。\n" <>
+  "その際、ルート用コピーの相対リンクには <packageName>_info/docs/ を前置して\n" <>
+  "ルート基準に張り直す (docs/README.md 本体は変更しない)。";
 
 GitHubValidateManifest::usage =
   "GitHubValidateManifest[packageName] は upload_manifest.json を検査し\n" <>
@@ -401,6 +403,8 @@ ClearAll[
   iEnsureManifest, iDetectPackageType, iDiscoverAuxWLFiles, iConflictedCopyFileQ,
   iCopyDirectoryFiltered, iAddExtraDirectories,
   iRefreshPackageGroup, iSyncReadme, iMatchExcludePattern, iInfoDirName,
+  iDocLinkAbsoluteQ, iNormalizeRelSegments, iRebaseDocLinkTarget,
+  iRebaseDocLinkSpec, iRewriteRootReadmeLinks,
   iLocalSnapshotDir, iSaveLocalSnapshot, iRestoreLocalSnapshot,
   iCopyLocalRepoToPackageDir, iCleanManifestFilesInPkgDir,
   iDetectNewerThanSnapshot, iSnapshotHashPath,
@@ -714,7 +718,25 @@ iAccessToken[] :=
     ]
   ];
 
+(* 2026-09-06: GET /user (認証ユーザーの login) をトークン別に TTL キャッシュ。
+   GitHubPackageURLs が RepoDB 未登録パッケージごとに GET /user を発行し、
+   127 パッケージで 55 秒 (実測) かかっていた。同じトークンなら login は不変。 *)
+If[!AssociationQ[$iGHLoginCache], $iGHLoginCache = <||>];
+If[!NumericQ[$iGHLoginCacheSeconds], $iGHLoginCacheSeconds = 3600];
+
 iResolveOwner[token_String, Automatic] :=
+  Module[{key = Hash[token, "SHA256"], ent, r},
+    ent = Lookup[$iGHLoginCache, key, None];
+    If[AssociationQ[ent] && StringQ[Lookup[ent, "Login"]] &&
+       NumericQ[Lookup[ent, "At"]] &&
+       AbsoluteTime[] - ent["At"] < $iGHLoginCacheSeconds,
+      Return[ent["Login"], Module]];
+    r = iResolveOwnerUncached[token, Automatic];
+    If[StringQ[r],
+      $iGHLoginCache[key] = <|"Login" -> r, "At" -> AbsoluteTime[]|>];
+    r];
+
+iResolveOwnerUncached[token_String, Automatic] :=
   Module[{resp, login},
     resp = iAPICall["GET", "user", token];
     If[FailureQ[resp], Return[resp]];
@@ -1459,16 +1481,118 @@ iCleanStaleLocalFiles[localDir_String, manifestDirs_List, copiedDirFiles_List, e
     deletedFiles
   ];
 
-(* _info/docs/README.md をトップレベル README.md として同期する *)
+(* ============================================================
+   トップ README.md の相対リンク張り直し (2026-08-31)
+
+   _info/docs/README.md はリポジトリのルートにも README.md としてコピーされるが、
+   本文の相対リンク (api.md / setup.md / examples/... / 画像) は docs/ 基準で
+   書かれているため、ルートに置いたコピーでは全て 404 になる。
+   ルート用コピーに限りリンク先へ "<pkg>_info/docs/" を前置し直す。
+   docs/README.md 本体は書き換えない (docs 内では今のリンクが正しい)。
+
+   誤爆防止: 張り直した先がミラーに実在するときだけ置換する。
+   これにより (a) コードブロック中の "](", "src=" のような偶然の一致、
+   (b) もともとルート基準で書かれたリンク (例: "github.wl") はそのまま残る。
+   ============================================================ *)
+
+(* 外部 URL / ルート絶対パス / ページ内アンカーは張り直し対象外 *)
+iDocLinkAbsoluteQ[t_String] :=
+  t === "" || StringStartsQ[t, "#"] || StringStartsQ[t, "/"] ||
+    StringMatchQ[t, RegularExpression["(?s)[A-Za-z][A-Za-z0-9+.\\-]*:.*"]];
+iDocLinkAbsoluteQ[_] := True;
+
+(* {"a","b","..","c"} → {"a","c"}。先頭に残る ".." はそのまま保持する *)
+iNormalizeRelSegments[segs_List] :=
+  Fold[
+    Which[
+      #2 === "." || #2 === "", #1,
+      #2 === "..", If[#1 =!= {} && Last[#1] =!= "..", Most[#1], Append[#1, ".."]],
+      True, Append[#1, #2]] &,
+    {}, segs];
+iNormalizeRelSegments[_] := {};
+
+(* docs/ 基準の相対リンクをリポジトリルート基準へ。
+   実在しない先になる場合は元のまま返す (現状維持 = 安全側)。 *)
+iRebaseDocLinkTarget[localDir_String, prefix_String, target_String] :=
+  Module[{path = target, tail = "", cut, segs, rebased, probe},
+    If[iDocLinkAbsoluteQ[target], Return[target]];
+    (* #fragment / ?query を切り離す *)
+    cut = StringPosition[path, "#" | "?", 1];
+    If[cut =!= {},
+      tail = StringDrop[path, cut[[1, 1]] - 1];
+      path = StringTake[path, cut[[1, 1]] - 1]];
+    If[path === "", Return[target]];
+    segs = iNormalizeRelSegments[
+      Join[StringSplit[prefix, "/"], StringSplit[path, "/"]]];
+    If[segs === {}, Return[target]];
+    rebased = StringRiffle[segs, "/"];
+    probe = Quiet @ Check[
+      FileNameJoin[Flatten[{localDir, FileNameSplit[URLDecode[rebased]]}]], $Failed];
+    If[StringQ[probe] && (FileExistsQ[probe] || DirectoryQ[probe]),
+      rebased <> tail,
+      target]
+  ];
+iRebaseDocLinkTarget[_, _, t_] := t;
+
+(* リンク記述 (target / target "title" / <target>) の target 部分だけ張り直す *)
+iRebaseDocLinkSpec[localDir_String, prefix_String, spec_String] :=
+  Module[{parts, lead, tgt, rest, bare, wrapped = False, new},
+    parts = StringCases[spec,
+      StartOfString ~~ lz:(WhitespaceCharacter ...) ~~
+        tz:(Except[WhitespaceCharacter] ..) ~~ rz___ ~~ EndOfString :> {lz, tz, rz}, 1];
+    If[parts === {}, Return[spec]];
+    {lead, tgt, rest} = First[parts];
+    bare = tgt;
+    If[StringLength[bare] >= 2 && StringStartsQ[bare, "<"] && StringEndsQ[bare, ">"],
+      wrapped = True; bare = StringTake[bare, {2, -2}]];
+    new = iRebaseDocLinkTarget[localDir, prefix, bare];
+    If[new === bare, Return[spec]];
+    lead <> If[wrapped, "<" <> new <> ">", new] <> rest
+  ];
+iRebaseDocLinkSpec[_, _, s_] := s;
+
+iRewriteRootReadmeLinks[content_String, localDir_String, prefix_String] :=
+  StringReplace[content, {
+    (* インライン形式 [text](target) / ![alt](target "title") / [text](<target>) *)
+    "](" ~~ sz:(Except["(" | ")" | "\r" | "\n"] ..) ~~ ")" :>
+      "](" <> iRebaseDocLinkSpec[localDir, prefix, sz] <> ")",
+    (* 参照定義 [label]: target *)
+    StartOfLine ~~ "[" ~~ lz:(Except["]" | "\r" | "\n"] ..) ~~ "]:" ~~
+      sz:(Except["\r" | "\n"] ..) :>
+      "[" <> lz <> "]:" <> iRebaseDocLinkSpec[localDir, prefix, sz],
+    (* HTML の src= / href= *)
+    az:("src=\"" | "href=\"") ~~ sz:(Except["\"" | "\r" | "\n"] ..) ~~ "\"" :>
+      az <> iRebaseDocLinkSpec[localDir, prefix, sz] <> "\""
+  }];
+iRewriteRootReadmeLinks[c_, _, _] := c;
+
+(* _info/docs/README.md をトップレベル README.md として同期する。
+   ルート用コピーは相対リンクをルート基準に張り直してから書き出す。 *)
 iSyncReadme[packageName_String, localDir_String] :=
-  Module[{readmeSrc, readmeDst},
+  Module[{readmeSrc, readmeDst, prefix, ba, content, rewritten, outBA, written},
     readmeSrc = FileNameJoin[{iPackageDirectory[], iInfoDirName[packageName], "docs", "README.md"}];
     readmeDst = FileNameJoin[{localDir, "README.md"}];
-    If[FileExistsQ[readmeSrc],
+    If[!FileExistsQ[readmeSrc], Return[None]];
+    prefix = iInfoDirName[packageName] <> "/docs";
+    (* 改行コード・末尾改行を変えないようバイト列で読み書きする
+       (Import["Text"] は末尾の改行を落とすため使わない) *)
+    ba = Quiet @ Check[iReadLocalByteArray[readmeSrc], $Failed];
+    content = If[ByteArrayQ[ba],
+      Quiet @ Check[ByteArrayToString[ba, "UTF-8"], $Failed], $Failed];
+    rewritten = If[StringQ[content],
+      Quiet @ Check[iRewriteRootReadmeLinks[content, localDir, prefix], content],
+      $Failed];
+    (* 読めない / 書き換え結果が不正 / 差分なし → 従来どおり素のコピー *)
+    If[!StringQ[content] || !StringQ[rewritten] ||
+       rewritten === content || StringTrim[rewritten] === "",
       Quiet @ CopyFile[readmeSrc, readmeDst, OverwriteTarget -> True];
-      readmeDst,
-      None
-    ]
+      Return[readmeDst]];
+    outBA = Quiet @ Check[StringToByteArray[rewritten, "UTF-8"], $Failed];
+    written = If[ByteArrayQ[outBA],
+      Quiet @ Check[iWriteLocalByteArray[readmeDst, outBA], $Failed], $Failed];
+    If[!StringQ[written],
+      Quiet @ CopyFile[readmeSrc, readmeDst, OverwriteTarget -> True]];
+    readmeDst
   ];
 
 (* ============================================================
@@ -1839,10 +1963,26 @@ GitHubPackageURL[packageName_String, opts:OptionsPattern[]] :=
     iRepositoryURL[owner, repo]
   ];
 
+(* 2026-09-06: 旧実装は GitHubPackageURL を全パッケージに map し、トークン取得・
+   RepoDB 読み込み・owner 解決 (GET /user) をパッケージ数だけ繰り返していた
+   (127 本で 55 秒)。トークンと RepoDB は 1 回、既定 owner は必要な時に 1 回だけ
+   解決する。結果は GitHubPackageURL を個別に呼んだ場合と同じ。 *)
 GitHubPackageURLs[] :=
-  Module[{names},
+  Module[{names, token, db, defaultOwner = None, needDefault, ownerOf},
     names = iListPackageNames[];
-    Association[# -> GitHubPackageURL[#] & /@ names]
+    token = iAccessToken[];
+    If[FailureQ[token], Return[Association[# -> $Failed & /@ names]]];
+    db = iLoadRepoDB[];
+    ownerOf[name_String] := With[{o = Lookup[Lookup[db, name, <||>], "owner", Automatic]},
+      If[StringQ[o] && StringLength[o] > 0, o, Automatic]];
+    needDefault = AnyTrue[names, ownerOf[#] === Automatic &];
+    If[needDefault, defaultOwner = iResolveOwner[token, Automatic]];
+    Association @ Map[
+      Function[name, Module[{ow = ownerOf[name]},
+        If[ow === Automatic, ow = defaultOwner];
+        If[ow === None || FailureQ[ow], name -> $Failed,
+          name -> iRepositoryURL[ow, iResolveRepository[name, Automatic]]]]],
+      names]
   ];
 
 (* ============================================================

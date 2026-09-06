@@ -35,6 +35,8 @@ GitHubPackageURLs[]
 (* -> <|"claudecode" -> "https://...", "NBAccess" -> "https://...", ...|> *)
 ```
 
+**内部実装のパフォーマンス最適化（2026-09-06）:** 以前の実装は全パッケージに対して `GitHubPackageURL` を個別に呼び出しており、トークン取得・RepoDB 読み込み・既定 owner 解決（`GET /user`）をパッケージ数だけ繰り返していました（127 パッケージで実測 55 秒）。現在はトークンと RepoDB を 1 回だけ読み込み、既定 owner の解決が必要な場合も（RepoDB に owner 未登録のパッケージが 1 つでもあるときのみ）1 回だけ `GET /user` を呼んでから、全パッケージ分の URL をまとめて組み立てます。結果は `GitHubPackageURL` を個別に呼んだ場合と完全に同じです。さらに、認証ユーザーの login 自体もアクセストークンごとに TTL（既定 3600 秒）でキャッシュされるため、同一トークンでの繰り返し呼び出し（`GitHubPackageURL` 単体呼び出しを含む）はキャッシュが有効な間さらに高速化されます。
+
 ---
 
 ## 2. ローカルリポジトリ管理
@@ -155,6 +157,13 @@ GitHubValidateManifest["mypackage"]
 ### `GitHubRefreshLocalPackageGroup`
 `upload_manifest.json` に基づき対象ファイル群をローカル作業フォルダへコピーします。`_info/docs/README.md` が存在すればトップレベル `README.md` として配置します。また `_info/originals/` に保存されているファイルをリポジトリフォルダへ書き戻します。
 
+**ルート README.md の相対リンク自動張り直し（2026-08-31）:** `_info/docs/README.md` 本文中の相対リンク（Markdown インラインリンク `[text](target)`、参照定義形式 `[label]: target`、および HTML の `src="..."` / `href="..."`）は `docs/` フォルダ基準で書かれています（例: `api.md`, `setup.md`, `examples/...`, 画像パスなど）。このファイルをリポジトリのトップレベルへ `README.md` としてコピーする際は、そのままではルートから見て相対パスがずれて 404 になってしまうため、リンク先には自動的に `<packageName>_info/docs/` が前置され、リポジトリルート基準のパスへ張り直されます。`docs/README.md` 本体は書き換えられません（`docs/` フォルダ内では元のリンクがそのまま正しいため、ルート用コピーにのみ適用されます）。
+
+- **誤爆防止:** 張り直した後のパスがローカルミラー上に実在するファイル・ディレクトリである場合のみ置換されます。実在しない場合は元のリンクをそのまま残します（現状維持 = 安全側）。これにより、コードブロック中に偶然現れる `"]("` や `src="` のような文字列、およびもともとリポジトリルート基準で書かれていたリンク（例: `github.wl` へのリンク）は誤って書き換えられません。
+- **対象外:** 外部 URL（`http://` 等のスキーム付き）、ルート絶対パス（`/` 始まり）、ページ内アンカー（`#` 始まり）は張り直しの対象になりません。
+- `..` を含む相対パスのセグメントは正しく正規化されます（例: `{"a", "b", "..", "c"}` → `{"a", "c"}`。先頭に残る `".."` はそのまま保持されます）。
+- `#fragment` や `?query` が付いたリンクは、パス部分だけを張り直してから元の `#fragment` / `?query` を付け戻します。
+
 **ソース削除ファイルの自動クリーンアップ:** ソース側（`$packageDirectory`）で削除されたファイルは、ローカルリポジトリの各マニフェストディレクトリからも自動的に削除されます。コピー対象にも除外パターン対象にも該当しないファイルが削除対象となります。
 
 **既定で保護される除外パターン:** マニフェストの `excludePatterns` の設定有無に関わらず、`<<パッケージ名>>_info/history/`・`<<パッケージ名>>_info/references/`・`<<パッケージ名>>_info/docs/docs/` は常に除外対象として保護されます。この保護は pull コピー・push スナップショット・stale ファイル掃除のすべての経路に適用されます。特に `docs/docs/` パターンは、過去の同期事故でリポジトリ内にネストした `docs` フォルダの重複が混入した際、pull のたびにローカルへ再生成されて doc 更新対象が膨張し続ける（→ push で再コミットが繰り返される）永久ループを断つために追加されました。リポジトリ側に残骸があってもローカルへは二度と取り込まれません。
@@ -181,7 +190,7 @@ GitHubRefreshLocalPackage["mypackage"]
 ## 3. リモートリポジトリ操作
 
 ### `GitHubCreateRepository`
-GitHub 上に新規リポジトリを作成します。デフォルトは private。`upload_manifest.json` があればファイル群を初回コミットします。
+GitHub 上に新規リポジトリを作成します。デフォルトは private。`upload_manifest.json` があればファイル群を初回コミットします。`_info/docs/README.md` があればトップレベル `README.md` として配置されます（相対リンクの自動張り直しについては「`GitHubRefreshLocalPackageGroup`」の項を参照してください）。
 
 ```mathematica
 GitHubCreateRepository["mypackage", Public -> True, Description -> "My WL package"]
@@ -592,7 +601,7 @@ PackageCommitDiff["github"]
 
 | オプション | 既定値 | 説明 |
 |---|---|---|
-| `"MessageGenerator"` | `Automatic` | `Automatic`（差分からの決定論的単文）、`"固定文字列"`、または関数（diff Association を受け取り文字列を返す）を指定 |
+| `"MessageGenerator"` | `Automatic` | `Automatic`（差分からの決定論的単文)、`"固定文字列"`、または関数（diff Association を受け取り文字列を返す）を指定 |
 | `"SkipDocsGate"` | `False` | `True` で docs 鮮度ゲートを無視して進む。OK 結果には `StaleDocs` 警告と `DocsGateSkipped` が付く |
 
 ```mathematica

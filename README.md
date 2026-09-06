@@ -24,7 +24,7 @@ GitHub Contents API の単純なファイル更新ではなく、Git の低レ�
 
 ## 差分ベースの自動コミット（ドキュメント鮮度ゲート付き）
 
-旧 `PackageAutoCommit.wl` の機能を **`github.wl` に統合**し、任意のローカルパッケージを安全に GitHub へオートコミットする支援関数群を提供します。中核となる `PackageCommit` は、(1) **ドキュメント鮮度ゲート**（`PackageDocsFreshnessGate`）で `_info/docs/` の `api.md` / `api_*.md` が対応する `.wl` 以降に更新されているかを検査し、(2) 前回コミットのスナップショットと現ソースを内容比較する**差分計算**（`PackageCommitDiff`）を行い、(3) 差分から**コミットメッセージ案**を生成してから、ゲート通過かつ差分ありのときだけ `GitHubRefreshAndCommit` を実行します。`.wl` を更新したのにドキュメントが古いままの場合は `Blocked` となり実コミットを停止するため、ドキュメントとソースの乖離を防げます。既定は `"DryRun" -> True`（実コミットせず計画とメッセージ案のみ確認）で、安全側に倒した設計です。コミットメッセージは決定論的な単文生成のほか、`PackageLLMMessageGenerator` で [claudecode](https://github.com/transreal/claudecode) の LLM による content-aware 生成（実際の変更行を要約）に切り替えられます。削除を伴うコミット（`DeleteMissing -> True`）の前には、読み取り専用の `PackageCommitDeletionPreview` で削除候補ファイルを事前確認できます。また DryRun のプレビュー時に限り `"SkipDocsGate" -> True` でドキュメント鮮度ゲートを一時的にスキップしメッセージ案だけを確認できますが、実コミットでは無視され必ずゲートが適用されます。
+旧 `PackageAutoCommit.wl` の機能を **`github.wl` に統合**し、任意のローカルパッケージを安全に GitHub へオートコミットする支援関数群を提供します。中核となる `PackageCommit` は、(1) **ドキュメント鮮度ゲート**（`PackageDocsFreshnessGate`）で `_info/docs/` の `api.md` / `api_*.md` が対応する `.wl` 以降に更新されているかを検査し、(2) 前回コミットのスナップショットと現ソースを内容比較する**差分計算**（`PackageCommitDiff`）を行い、(3) 差分から**コミットメッセージ案**を生成してから、ゲート通過かつ差分ありのときだけ `GitHubRefreshAndCommit` を実行します。`.wl` を更新したのにドキュメントが古いままの場合は `Blocked` となり実コミットを停止するため、ドキュメントとソースの乖離を防げます。既定は `"DryRun" -> True`（実コミットせず計画とメッセージ案のみ確認）で、安全側に倒した設計です。コミットメッセージは決定論的な単文生成のほか、`PackageLLMMessageGenerator` で [claudecode](https://github.com/transreal/claudecode) の LLM による content-aware 生成（実際の変更行を要約）に切り替えられます。削除を伴うコミット（`DeleteMissing -> True`）の前には、読み取り専用の `PackageCommitDeletionPreview` で削除候補ファイルを事前確認できます。また DryRun のプレビュー時に限り `"SkipDocsGate" -> True` でドキュメント鮮度ゲートを一時的にスキップしメッセージ案だけを確認できますが、実コミットでは無視され必ずゲートが適用されます。ドキュメント鮮度の判定は、doc 生成ツールが記録するコンテンツハッシュ（サイドカー記録）を一次情報として優先し、記録がない場合のみ `.wl` の更新日時比較にフォールバックします。
 
 ## 日本語パッケージ名対応
 
@@ -61,6 +61,10 @@ GitHub リポジトリ名には ASCII 文字しか使えないため、日本語
 | C (リモート + `_info` なし) | RepoDB に owner 登録あり、`_info` フォルダなし | `.wl` のみ `$packageDirectory` へ、それ以外は `_info/originals/` に保存 |
 
 パターン C の場合、非 `.wl` ファイル（README 等）は `packageName_info/originals/` へ振り分けられ、`doc_options.json` にマッピングが保存されます。コミット時に `iRestoreOriginalsToRepo` が元の位置へ書き戻します。
+
+## パッケージ一覧取得の高速化
+
+`GitHubPackageURLs[]` は、以前は `$packageDirectory` 内の全パッケージに対して個別の URL 解決（トークン取得・リポジトリ名データベース読み込み・既定 owner の `GET /user` 解決）を繰り返す実装でした。現在はトークンとリポジトリ名データベースを 1 回だけ読み込み、既定 owner の解決が必要な場合（owner 未登録のパッケージが 1 つでもある場合）のみ `GET /user` を 1 回呼び出してから、全パッケージ分の URL をまとめて組み立てるように最適化されています。結果は各パッケージを個別に `GitHubPackageURL` で呼んだ場合と完全に同じです。さらに認証ユーザーの login はアクセストークンごとに TTL（既定 3600 秒）でキャッシュされるため、同一トークンでの繰り返し呼び出しはキャッシュが有効な間さらに高速化されます。
 
 ## 詳細説明
 
@@ -202,7 +206,7 @@ GitHubInstallPackage["pkg", "https://github.com/alice/repo"]
 #### URL / リポジトリ情報
 
 - **`GitHubPackageURL[name]`** — `$packageDirectory` 内パッケージの GitHub URL を返す
-- **`GitHubPackageURLs[]`** — 全パッケージの `<|name -> url|>` を返す
+- **`GitHubPackageURLs[]`** — 全パッケージの `<|name -> url|>` を返す。トークン・RepoDB の読み込みと owner 解決（`GET /user`）をまとめて 1 回ずつだけ行うよう最適化されており、パッケージ数が多くても高速（結果は `GitHubPackageURL` を個別に呼んだ場合と同一）。認証ユーザーの login はトークンごとに TTL キャッシュされる
 - **`GitHubRepoPath[name]`** — ローカル作業フォルダのパスを返す
 - **`GitHubEnsureLocalRepo[name]`** — ローカル作業フォルダを作成して返す
 
@@ -215,7 +219,7 @@ GitHubInstallPackage["pkg", "https://github.com/alice/repo"]
 
 #### 差分ベースの自動コミット（旧 PackageAutoCommit、github.wl に統合）
 
-- **`PackageDocsFreshnessGate[name]`** — `_info/docs/` の `api.md` / `api_*.md` が対応する `.wl` 以降に更新されているか検査する。古い場合は `Proceed -> False`
+- **`PackageDocsFreshnessGate[name]`** — `_info/docs/` の `api.md` / `api_*.md` が対応する `.wl` 以降に更新されているか検査する。古い場合は `Proceed -> False`。doc 生成ツールが記録するコンテンツハッシュを優先的に参照し、記録が無い場合のみ更新日時比較にフォールバックする
 - **`PackageCommitDiff[name]`** — 前回コミットスナップショットと現ソースを内容比較し、追加・変更・削除ファイルを求める（ReadOnly。リフレッシュ前に呼ぶ）
 - **`PackageCommitPlan[name]`** — ゲート → 差分 → メッセージ案を ReadOnly に組み立てる。通過かつ差分ありのときのみ `Status -> "OK"`。`"SkipDocsGate" -> True` を指定すると DryRun のプレビューに限りゲートを無視できる
 - **`PackageCommit[name]`** — 計画を実行し、`Status -> "OK"` のときだけ実コミット。**既定は `"DryRun" -> True`**。ドキュメントが古い／差分なしなら安全に短絡停止する。実コミットでは `"SkipDocsGate"` は無効
@@ -402,6 +406,8 @@ GitHubCreateRepository["情報工学科時間割"]
 (* -> 自動的に "jouhou-timetable" などの英語リポジトリ名を生成 *)
 ```
 
+---
+
 ## 免責事項
 
 本ソフトウェアは "as is"（現状有姿）で提供されており、明示・黙示を問わずいかなる保証もありません。
@@ -409,6 +415,8 @@ GitHubCreateRepository["情報工学科時間割"]
 今後の動作保証のための更新が行われるとは限りません。
 本ソフトウェアとドキュメントはほぼすべてが生成AIによって生成されたものです。
 Windows 11上での実行を想定しており、MacOS, LinuxのMathematicaでの動作検証は一切していません(生成AIの処理で対応可能と想定されます)。
+
+---
 
 ## ライセンス
 

@@ -8,6 +8,8 @@ NBAccess.wl と claudecode.wl と連携する GitHub REST ヘルパー。認証�
 
 Markdown 先頭 `---` ガード: ミラーリフレッシュ時、すべての `.md` ファイルに対し先頭の独立した `---` 行(YAML front matter でないもの)を自動除去する。GitHub はこれを front matter としてパースし本文全体が消えるため。閉じ `---` と `key: value` 行を持つ本物の front matter(Claude Directives の rules/*.md / SKILL.md など)はそのまま通過する。
 
+トップ README.md の相対リンク張り直し: `_info/docs/README.md` をリポジトリルートへ README.md としてコピーする際(GitHubRefreshLocalPackageGroup / GitHubRefreshAndCommit / GitHubCreateRepository)、本文中の相対リンク(`api.md`・`setup.md`・`examples/...`・画像など)は docs/ 基準で書かれているためルートに置いたコピーでは 404 になる。ルート用コピーに限り `<packageName>_info/docs/` をリンク先へ前置して張り直す(張り直し先がミラーに実在するときのみ置換; 外部 URL・絶対パス・ページ内アンカーは対象外)。`docs/README.md` 本体は書き換えない。
+
 ## URL 取得
 ### GitHubPackageURL[packageName, opts]
 `$packageDirectory` 内パッケージの GitHub URL を返す
@@ -45,13 +47,13 @@ upload_manifest.json を読む。無ければ自動生成しディスク保存�
 Issues の Issue 種別: "MissingFiles", "SuspectSecretFiles", "PrivateCodeFiles"(CodePrivacyLevel > 0。upload_manifest.json から外すこと)
 
 ### GitHubRefreshLocalPackageGroup[packageName, opts]
-manifest に基づき対象ファイル・ディレクトリをローカル作業フォルダへコピー。`_info/docs/README.md` をトップ README.md として配置。コピー後すべての `.md` ファイルの先頭偽 front matter `---` を自動除去(本物の front matter は保持)。CodePrivacyLevel > 0 のファイルが manifest 対象に含まれる場合は何もコピーせず `Failure["PrivateCodeBlocked", ...]` を返す
+manifest に基づき対象ファイル・ディレクトリをローカル作業フォルダへコピー。`_info/docs/README.md` をトップ README.md として配置し、その際ルート用コピーの相対リンクには `<packageName>_info/docs/` を前置してルート基準に張り直す(張り直し先がミラーに実在する場合のみ; `docs/README.md` 本体は変更しない)。コピー後すべての `.md` ファイルの先頭偽 front matter `---` を自動除去(本物の front matter は保持)。CodePrivacyLevel > 0 のファイルが manifest 対象に含まれる場合は何もコピーせず `Failure["PrivateCodeBlocked", ...]` を返す
 → Association(リフレッシュ結果) | Failure
 Options: LocalRepoPath -> Automatic
 
 ## リポジトリ作成
 ### GitHubCreateRepository[packageName, opts]
-GitHub 上に新規リポジトリを作成。既定 private。manifest があれば対象ファイル群をまとめて初回コミット(非公開コード関所は GitHubRefreshLocalPackageGroup と同様に適用)。`_info/docs/README.md` をトップ README.md に配置。作成後 API 反映を待機
+GitHub 上に新規リポジトリを作成。既定 private。manifest があれば対象ファイル群をまとめて初回コミット(非公開コード関所は GitHubRefreshLocalPackageGroup と同様に適用)。`_info/docs/README.md` をトップ README.md に配置(相対リンクはルート基準へ自動張り直し)。作成後 API 反映を待機
 → `<|Package, Owner, Repository, DefaultBranch, LocalRepoPath, RefreshResult, Response|>` | Failure
 Options: Repository -> Automatic, Public -> False, Description -> "", Homepage -> None, AutoInit -> True, GitignoreTemplate -> None, LicenseTemplate -> None, LocalRepoPath -> Automatic, IncludePackageFile -> True (作成前に manifest ファイルをコピー), PackageFile -> Automatic, ExtraDirectories -> {} (manifest の directories に永続追加), Fallback -> False
 例: GitHubCreateRepository["claudecode", Public -> True, ExtraDirectories -> {"Claude Directives"}]
@@ -82,7 +84,7 @@ pull request を作成
 Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, Head -> Automatic (Automatic は Branch), BaseBranch -> Automatic, Body -> "", Draft -> False, MaintainerCanModify -> True, Fallback -> False
 
 ### GitHubRefreshAndCommit[packageName, message, opts]
-manifest に基づき対象ファイル群をローカルへコピーし GitHub へコミット。コピー時に `.md` ファイルの先頭偽 front matter `---` を自動除去。`_info/docs/README.md` 変更時はトップ README.md も自動更新。CodePrivacyLevel > 0 のファイルが manifest 対象に含まれる場合はコピー・コミットとも行わず `Failure["PrivateCodeBlocked", ...]` を返す。コミット失敗時はローカルミラー(GithubRepositories/<pkg>)を refresh 前の状態へ自動ロールバックする(次回の差分計算が前回コミット基準からずれないように)
+manifest に基づき対象ファイル群をローカルへコピーし GitHub へコミット。コピー時に `.md` ファイルの先頭偽 front matter `---` を自動除去。`_info/docs/README.md` 変更時はトップ README.md も自動更新する(相対リンクはルート基準へ自動張り直し)。CodePrivacyLevel > 0 のファイルが manifest 対象に含まれる場合はコピー・コミットとも行わず `Failure["PrivateCodeBlocked", ...]` を返す。コミット失敗時はローカルミラー(GithubRepositories/<pkg>)を refresh 前の状態へ自動ロールバックする(次回の差分計算が前回コミット基準からずれないように)
 → Association | Failure
 Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, CreateBranch -> Automatic, LocalRepoPath -> Automatic, DeleteMissing -> False, Force -> False, Author -> Automatic, Committer -> Automatic, ExtraDirectories -> {}, Fallback -> False
 
@@ -242,7 +244,7 @@ MIT ライセンスの著作権者名。空文字列の場合ライセンスセ�
 
 ### $PackageCommitModel
 型: Automatic | None | モデル指定子({provider,model} 例 $iModelSonnet、またはモデル名 String) | (prompt->String 関数), 初期値: Automatic
-PackageCommit / PackageCommitPlan の既定コミットメッセージモデル。既定 Automatic では claudecode がロード済みなら周囲の既定モデルで差分内容を要約した LLM メッセージを生成し、未ロード/失敗時は決定論的なファイル名列挙にフォールバックする。特定モデルを使うにはモデル指定子か prompt->文字列 関数を代入する。README の「## 謝辞」節が消えるコミットは既定で Blocked。意図的削除時のみ True)
+PackageCommit / PackageCommitPlan の既定コミットメッセージモデル。既定 Automatic では claudecode がロード済みなら周囲の既定モデルで差分内容を要約した LLM メッセージを生成し、未ロード/失敗時は決定論的なファイル名列挙にフォールバックする。特定モデルを使うにはモデル指定子か prompt->文字列 関数を代入する。None を代入すると LLM を呼ばず決定論メッセージに固定する。再ロードで値を保持する
 例: $PackageCommitModel = $iModelSonnet; PackageCommit["claudecode", "DryRun" -> True]["CommitMessage"]
 
 ## オプションシンボル一覧
