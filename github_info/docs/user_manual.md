@@ -83,6 +83,7 @@ $packageDirectory/
 - 検出されたファイルは `upload_manifest.json` の `"files"` リストに自動的に追加されます（`GitHubReadManifest` 呼び出し時に更新）。
 - マニフェストに未登録の補助ファイル（`addedFiles`）は新規追加として記録されます。
 - `GitHubRefreshLocalPackageGroup` / `GitHubRefreshAndCommit` / `GitHubCreateRepository` 実行時に、メインファイルと補助ファイルがまとめてローカル作業フォルダへコピーされ、一括でコミットされます。
+- **`PackageCommitDiff` / `PackageCommitPlan` との整合（2026-09-06）:** 実コミット経路（`iEnsureManifest`）だけでなく、コミット前の差分プレビューを計算する `PackageCommitDiff` 側でも同じ自動収集規則を読み取り専用で適用するようになりました。詳細は「9. パッケージ自動コミット」の `PackageCommitDiff` の項を参照してください。
 
 **使用例:**
 
@@ -132,10 +133,11 @@ GitHubValidateManifest["mypackage"]
 |---|---|
 | `MissingFiles` | マニフェストに記載されているがディスク上に存在しないファイル |
 | `SuspectSecretFiles` | `"secret"`, `"token"`, `"credential"`, `".pid"`, `".heartbeat"`, `".log"` といった文字列をファイル名に含む疑わしいファイル |
+| `PrivateCodeFiles` | ファイル先頭付近に `:CodePrivacyLevel:` マーカーがあり、その値が `0` より大きいファイル（非公開コードの関所。`GitHubRefreshLocalPackageGroup` 側でも fail-closed で公開リポジトリへのコピーを遮断します） |
 
 **`Issues` の構造:**
 
-問題が検出された場合、`Issues` フィールドに `<|"Issue" -> "MissingFiles", "Files" -> {...}|>` や `<|"Issue" -> "SuspectSecretFiles", "Files" -> {...}|>` の形式で記録されます。問題がなければ `Issues -> {}` となります。
+問題が検出された場合、`Issues` フィールドに `<|"Issue" -> "MissingFiles", "Files" -> {...}|>` や `<|"Issue" -> "SuspectSecretFiles", "Files" -> {...}|>`、`<|"Issue" -> "PrivateCodeFiles", "Files" -> {...}, "Hint" -> "CodePrivacyLevel > 0。upload_manifest.json から外すこと"|>` の形式で記録されます。問題がなければ `Issues -> {}` となります。
 
 **用途:** リポジトリへのコミット・配布前に「成果ファイルが抜けていないか」「機密情報が混入していないか」を素早く確認するためのチェックツールです。
 
@@ -576,6 +578,8 @@ PackageDocsFreshnessGate["github"]
 - `GitHubRefreshAndCommit` の前方マッピング（`files` = basename、`directories` = 相対パス + 除外パターン）を再現して、ソース ↔ スナップショットを内容比較します。
 - **必ずリフレッシュ前に呼んでください。** リフレッシュ後はスナップショットが上書きされ、差分が消えてしまいます。
 
+**補助 `.wl` ファイル自動検出との整合（2026-09-06）:** マニフェストにまだ登録されていない `<<パッケージ名>>_<<追加文字列>>.wl` 形式の補助ファイル（例: `documentation_paper2nb.wl`）がディスク上に新規に存在する場合、実コミット（`GitHubRefreshAndCommit` → `iRefreshPackageGroup` → `iEnsureManifest`）はこの補助ファイルを自動的に `"files"` へ追加してからミラーへコピーします。以前は `PackageCommitDiff` がディスク上の `upload_manifest.json` をそのまま読むだけだったため、こうした未登録の補助ファイルが `Added` に反映されず、`PackageCommitDiff` / `PackageCommitPlan` の差分・`NoChange` 判定・DryRun のコミットメッセージ案が実際のコミット結果と食い違うことがありました。現在は `PackageCommitDiff` 側でも同じ自動追加規則（および競合コピーの除外・`CodePrivacyLevel` > 0 ファイルの除外）を `iDiscoverAuxWLFiles` 経由で読み取り専用に適用してから比較するため、実コミットの内容と一致するようになりました。ディスク上の `upload_manifest.json` 自体は書き換えません（差分計算のためだけの一時的な補完です）。
+
 ```mathematica
 PackageCommitDiff["github"]
 (* -> <|"Status" -> "OK", "Package" -> "github",
@@ -596,6 +600,7 @@ PackageCommitDiff["github"]
 - ゲートが `Proceed -> False`（docs が古い）なら `Status -> Blocked`。
 - 差分が無ければ `Status -> NoChange`。
 - 両方 OK なら `Status -> OK` で `CommitMessage` を返します。
+- 差分計算は上記 `PackageCommitDiff` を経由するため、未登録の補助 `.wl` ファイルがある場合の `NoChange` 誤判定（実際には追加ファイルがあるのに差分なしと判定される）も解消されています。
 
 **オプション:**
 
@@ -731,6 +736,7 @@ GitHubRefreshAndCommit["mypackage", "feat: split into modules"]
 - 補助ファイルの命名は必ず `<<パッケージ名>>_` で始める必要があります（例: `mypackage_helpers.wl`）。
 - 命名規則に従わないファイルは自動収集されません。手動で `upload_manifest.json` の `"files"` リストに追加するか、`ExtraDirectories` オプションを使用してください。
 - 422 競合エラーが発生した場合（並列実行による head SHA のずれなど）、内部で自動リトライが最大 3 回行われます。3 回すべて失敗した場合は「並列実行を避けるか、時間をおいて再試行してください」というメッセージが返されます。
+- `PackageCommitDiff` / `PackageCommitPlan` によるコミット前の DryRun プレビューは、まだマニフェストに登録されていない新しい補助 `.wl` ファイルも自動検出して差分に含めるため、実際の `GitHubRefreshAndCommit` の結果と一致します。
 
 ---
 

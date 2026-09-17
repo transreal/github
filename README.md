@@ -14,9 +14,13 @@ APIキーをコード中に直書きしない安全設計を採用していま�
 
 単純な `.wl` ファイル単体のアップロードだけでなく、パクレット（フォルダ型パッケージ）や付属ドキュメント群をまとめて同期するために、**マニフェスト**（`packageName_info/upload_manifest.json`）を導入しています。マニフェストにはアップロード対象ファイル・ディレクトリ・除外パターンを記述でき、パッケージ種別（`.wl` 単体 / パクレットフォルダ）を自動検出して初回は自動生成されます。パッケージ種別が変更された場合（`.wl` からパクレットへの変換など）もマニフェストは自動更新されます。`_info/docs/README.md` が存在する場合はリポジトリのトップレベル `README.md` として自動配置されるため、ドキュメント管理も一元化できます。`_info/history/`・`_info/references/`・`_info/docs/docs/` のようなネストした重複フォルダは、マニフェストの設定に関わらず常に除外対象として保護されます。特に `docs/docs/` パターンは過去の同期事故に由来する残骸で、混入すると pull のたびにローカルへ再生成されてしまうため、必要であれば手動で削除してください（自動削除はされません）。
 
+ファイル先頭付近（4096バイト以内）に機械可読マーカー `(* :CodePrivacyLevel: 0.1 *)`（`.md` では `<!-- :CodePrivacyLevel: x -->`）を置くことで「ソースコード自体を非公開にする」ことを宣言できる**非公開コード関所**を備えています。マニフェスト対象ファイルにこの値が `0` より大きいものが1つでも含まれると、`GitHubRefreshLocalPackageGroup` / `GitHubRefreshAndCommit` / `GitHubCreateRepository` の内部リフレッシュ処理は一切コピーを行わず fail-closed で遮断されるため、意図せず非公開コードが部分的に公開リポジトリへ混入することを防ぎます。`GitHubValidateManifest` でも同じ違反を事前に検出できます。
+
+ミラーへのリフレッシュ時には、すべての `.md` ファイルに対して先頭の偽 front matter（独立した `---` 行）を自動除去します（GitHub がこれを YAML front matter として誤解釈し本文が消えてしまう事故を防ぐため）。本物の front matter（閉じ `---` と `key: value` を持つもの）はそのまま保持されます。また `_info/docs/README.md` をトップレベル `README.md` として配置する際は、本文中の相対リンク（`api.md`・`examples/...` など）が docs フォルダ基準で書かれているためそのままではリンク切れになる問題を避けるべく、ルート用コピーに限り `<packageName>_info/docs/` を前置してリポジトリルート基準に自動的に張り直します（リンク先がミラーに実在する場合のみ置換し、`docs/README.md` 本体は変更しません）。
+
 ## 複数ファイルのパッケージ対応
 
-パッケージが複数の `.wl` ファイルで構成される場合、`<<リポジトリ名>>_<<追加文字列>>.wl` という命名規則に従ったファイルが `$packageDirectory` 内に存在すると、**補助ファイルとして自動的に検出**され、まとめてリポジトリに追加されます。たとえば `mypackage_helpers.wl`・`mypackage_utils.wl` といったファイルは `mypackage.wl` と同時に管理されます。検出された補助ファイルは `upload_manifest.json` の `"files"` リストに自動追加され、`GitHubRefreshAndCommit` / `GitHubCreateRepository` 実行時にメインファイルと一括でコミットされます。
+パッケージが複数の `.wl` ファイルで構成される場合、`<<リポジトリ名>>_<<追加文字列>>.wl` という命名規則に従ったファイルが `$packageDirectory` 内に存在すると、**補助ファイルとして自動的に検出**され、まとめてリポジトリに追加されます。たとえば `mypackage_helpers.wl`・`mypackage_utils.wl` といったファイルは `mypackage.wl` と同時に管理されます。検出された補助ファイルは `upload_manifest.json` の `"files"` リストに自動追加され、`GitHubRefreshAndCommit` / `GitHubCreateRepository` 実行時にメインファイルと一括でコミットされます。この自動検出は、OS の同期機能が作る競合コピー（`(1)` 付きファイルなど）や非公開コード（`CodePrivacyLevel > 0`）を読み取り専用で除外した上で適用されます。この自動収集規則は、実コミット経路だけでなく `PackageCommitDiff` の差分計算にも同じ形で反映されるため、まだマニフェスト未登録の補助ファイルがあっても Added 判定や DryRun のプレビュー・コミットメッセージにズレが生じません。
 
 ## Git 低レベル API によるコミット
 
@@ -24,7 +28,7 @@ GitHub Contents API の単純なファイル更新ではなく、Git の低レ�
 
 ## 差分ベースの自動コミット（ドキュメント鮮度ゲート付き）
 
-旧 `PackageAutoCommit.wl` の機能を **`github.wl` に統合**し、任意のローカルパッケージを安全に GitHub へオートコミットする支援関数群を提供します。中核となる `PackageCommit` は、(1) **ドキュメント鮮度ゲート**（`PackageDocsFreshnessGate`）で `_info/docs/` の `api.md` / `api_*.md` が対応する `.wl` 以降に更新されているかを検査し、(2) 前回コミットのスナップショットと現ソースを内容比較する**差分計算**（`PackageCommitDiff`）を行い、(3) 差分から**コミットメッセージ案**を生成してから、ゲート通過かつ差分ありのときだけ `GitHubRefreshAndCommit` を実行します。`.wl` を更新したのにドキュメントが古いままの場合は `Blocked` となり実コミットを停止するため、ドキュメントとソースの乖離を防げます。既定は `"DryRun" -> True`（実コミットせず計画とメッセージ案のみ確認）で、安全側に倒した設計です。コミットメッセージは決定論的な単文生成のほか、`PackageLLMMessageGenerator` で [claudecode](https://github.com/transreal/claudecode) の LLM による content-aware 生成（実際の変更行を要約）に切り替えられます。削除を伴うコミット（`DeleteMissing -> True`）の前には、読み取り専用の `PackageCommitDeletionPreview` で削除候補ファイルを事前確認できます。また DryRun のプレビュー時に限り `"SkipDocsGate" -> True` でドキュメント鮮度ゲートを一時的にスキップしメッセージ案だけを確認できますが、実コミットでは無視され必ずゲートが適用されます。ドキュメント鮮度の判定は、doc 生成ツールが記録するコンテンツハッシュ（サイドカー記録）を一次情報として優先し、記録がない場合のみ `.wl` の更新日時比較にフォールバックします。
+旧 `PackageAutoCommit.wl` の機能を **`github.wl` に統合**し、任意のローカルパッケージを安全に GitHub へオートコミットする支援関数群を提供します。中核となる `PackageCommit` は、(1) **ドキュメント鮮度ゲート**（`PackageDocsFreshnessGate`）で `_info/docs/` の `api.md` / `api_*.md` が対応する `.wl` 以降に更新されているかを検査し、(2) 前回コミットのスナップショットと現ソースを内容比較する**差分計算**（`PackageCommitDiff`）を行い、(3) 差分から**コミットメッセージ案**を生成してから、ゲート通過かつ差分ありのときだけ `GitHubRefreshAndCommit` を実行します。`.wl` を更新したのにドキュメントが古いままの場合は `Blocked` となり実コミットを停止するため、ドキュメントとソースの乖離を防げます。既定は `"DryRun" -> True`（実コミットせず計画とメッセージ案のみ確認）で、安全側に倒した設計です。コミットメッセージは決定論的な単文生成のほか、`PackageLLMMessageGenerator` で [claudecode](https://github.com/transreal/claudecode) の LLM による content-aware 生成（実際の変更行を要約）に切り替えられます。既定のメッセージ生成方式は `$PackageCommitModel` で制御でき、`Automatic`（既定）では claudecode がロード済みなら周囲の既定モデルで内容ベースのメッセージを生成し、`None` を指定すると常に決定論的な単文生成にフォールバックします。削除を伴うコミット（`DeleteMissing -> True`）の前には、読み取り専用の `PackageCommitDeletionPreview` で削除候補ファイルを事前確認できます。また DryRun のプレビュー時に限り `"SkipDocsGate" -> True` でドキュメント鮮度ゲートを一時的にスキップしメッセージ案だけを確認できますが、実コミットでは無視され必ずゲートが適用されます。ドキュメント鮮度の判定は、doc 生成ツールが記録するコンテンツハッシュ（サイドカー記録）を一次情報として優先し、記録がない場合のみ `.wl` の更新日時比較にフォールバックします。
 
 ## 日本語パッケージ名対応
 
@@ -152,7 +156,7 @@ GitHubPackageURLs[]
 GitHubCreateRepository["mypackage", Public -> False, Description -> "My WL package"]
 (* -> <|"DefaultBranch" -> "main", ...|> *)
 
-(* 4. コミット前にマニフェストを検証（ファイル欠損・機密情報混入チェック） *)
+(* 4. コミット前にマニフェストを検証（ファイル欠損・機密情報混入・非公開コード混入チェック） *)
 GitHubValidateManifest["mypackage"]
 (* -> <|"Status" -> "OK", "FileCount" -> 3, "MissingFiles" -> {}, "Issues" -> {}|> *)
 
@@ -212,24 +216,25 @@ GitHubInstallPackage["pkg", "https://github.com/alice/repo"]
 
 #### マニフェスト / ローカル同期
 
-- **`GitHubReadManifest[name]`** — `packageName_info/upload_manifest.json` を読む（不在時は自動生成）。パッケージ種別変更時は自動更新。`<<パッケージ名>>_*.wl` 形式の補助ファイルを `$packageDirectory` から自動検出してマニフェストに追加する
-- **`GitHubValidateManifest[name]`** — `upload_manifest.json` を検査し、ファイルの実在確認・機密情報らしきファイルの混入チェック・除外パターンの確認を行う。コミット・配布前の健全性チェックとして使用する
-- **`GitHubRefreshLocalPackageGroup[name]`** — マニフェストに従いファイルをローカル作業フォルダへコピー。`_info/originals/` の内容を元のリポジトリパスへ書き戻す処理（`iRestoreOriginalsToRepo`）も実行する。ソース側で削除されたファイルはローカルリポジトリからも自動クリーンアップされる。`_info/history/`・`_info/references/`・`_info/docs/docs/` は常に保護され取り込まれない
+- **`GitHubReadManifest[name]`** — `packageName_info/upload_manifest.json` を読む（不在時は自動生成）。パッケージ種別変更時は自動更新。`<<パッケージ名>>_*.wl` 形式の補助ファイルを `$packageDirectory` から自動検出してマニフェストに追加する（競合コピーや非公開コードは除外）
+- **`GitHubValidateManifest[name]`** — `upload_manifest.json` を検査し、ファイルの実在確認・機密情報らしきファイルの混入チェック・非公開コード（`CodePrivacyLevel > 0`）の混入チェック・除外パターンの確認を行う。コミット・配布前の健全性チェックとして使用する
+- **`GitHubRefreshLocalPackageGroup[name]`** — マニフェストに従いファイルをローカル作業フォルダへコピー。`_info/originals/` の内容を元のリポジトリパスへ書き戻す処理（`iRestoreOriginalsToRepo`）も実行する。ソース側で削除されたファイルはローカルリポジトリからも自動クリーンアップされる。`_info/history/`・`_info/references/`・`_info/docs/docs/` は常に保護され取り込まれない。コピーした `.md` の偽 front matter（先頭の独立した `---`）を自動除去し、トップ README.md の相対リンクはルート基準へ自動張り直しされる。非公開コード（`CodePrivacyLevel > 0`）が対象に含まれる場合は何もコピーせず fail-closed で遮断する
 - **`GitHubRefreshLocalPackage[name]`** — `.wl` 単体をローカルへコピー（後方互換用）
 
 #### 差分ベースの自動コミット（旧 PackageAutoCommit、github.wl に統合）
 
 - **`PackageDocsFreshnessGate[name]`** — `_info/docs/` の `api.md` / `api_*.md` が対応する `.wl` 以降に更新されているか検査する。古い場合は `Proceed -> False`。doc 生成ツールが記録するコンテンツハッシュを優先的に参照し、記録が無い場合のみ更新日時比較にフォールバックする
-- **`PackageCommitDiff[name]`** — 前回コミットスナップショットと現ソースを内容比較し、追加・変更・削除ファイルを求める（ReadOnly。リフレッシュ前に呼ぶ）
+- **`PackageCommitDiff[name]`** — 前回コミットスナップショットと現ソースを内容比較し、追加・変更・削除ファイルを求める（ReadOnly。リフレッシュ前に呼ぶ）。補助 `.wl` ファイルの自動収集規則を実コミット経路と同じ形で反映する
 - **`PackageCommitPlan[name]`** — ゲート → 差分 → メッセージ案を ReadOnly に組み立てる。通過かつ差分ありのときのみ `Status -> "OK"`。`"SkipDocsGate" -> True` を指定すると DryRun のプレビューに限りゲートを無視できる
 - **`PackageCommit[name]`** — 計画を実行し、`Status -> "OK"` のときだけ実コミット。**既定は `"DryRun" -> True`**。ドキュメントが古い／差分なしなら安全に短絡停止する。実コミットでは `"SkipDocsGate"` は無効
 - **`PackageCommitDeletionPreview[name]`** — `DeleteMissing -> True` でコミットする前に、削除対象となるファイルパスの一覧を確認する読み取り専用関数。実際には何も削除しない
 - **`PackageLLMMessageGenerator[queryFn]`** — 実際の変更行を要約する content-aware なコミットメッセージ生成器（`diff -> String`）を返す。モデル指定子を渡すと claudecode で自動ラップ
+- **`$PackageCommitModel`** — `PackageCommitPlan` / `PackageCommit` の既定メッセージ生成方式を決めるモデル指定（既定 `Automatic`。claudecode ロード済みなら内容ベース生成、`None` なら常に決定論的な単文生成）
 - **`$PackageAutoCommitVersion`** — 自動コミット機能のバージョン
 
 #### リポジトリ操作
 
-- **`GitHubCreateRepository[name]`** — GitHub に新規リポジトリを作成し、ファイルを初回コミット。`ExtraDirectories` でマニフェストにディレクトリを追加可能
+- **`GitHubCreateRepository[name]`** — GitHub に新規リポジトリを作成し、ファイルを初回コミット。`ExtraDirectories` でマニフェストにディレクトリを追加可能。非公開コード（`CodePrivacyLevel > 0`）が対象に含まれる場合は `GitHubRefreshLocalPackageGroup` と同様に遮断される
 - **`GitHubReadFile[name, path]`** — GitHub 上のファイルを読み取る
 - **`GitHubReadLocalFile[name]` / `GitHubReadLocalFile[name, path]`** — ローカルファイルを `$CharacterEncoding` に依存せず常に UTF-8 でデコードして返す。`path` 省略時はパッケージの `.wl` ファイルを読む。`GitHubReadFile` との内容比較や日本語環境での文字化け回避に使用する
 - **`GitHubPull[name]`** — リモートの内容をローカル作業フォルダへ取得
@@ -271,6 +276,7 @@ GitHubInstallPackage["pkg", "https://github.com/alice/repo"]
 #### グローバル変数
 
 - **`$GitHubLicenseHolder`** — MIT ライセンスの著作権者名。空文字列 `""` の場合、ライセンスセクションは `README.md` に挿入されません。例: `$GitHubLicenseHolder = "Katsunobu Imai"`
+- **`$PackageCommitModel`** — `PackageCommit` / `PackageCommitPlan` の既定メッセージ生成方式（既定 `Automatic`。`None` で常に決定論的な単文生成に固定）
 - **`$PackageAutoCommitVersion`** — 差分ベース自動コミット機能のバージョン
 
 ### ドキュメント一覧
@@ -300,7 +306,7 @@ GitHubCreateRepository["mypackage",
 ### コミット前のマニフェスト検証
 
 ```wolfram
-(* ファイルの欠損・機密情報の混入を事前にチェック *)
+(* ファイルの欠損・機密情報の混入・非公開コードの混入を事前にチェック *)
 GitHubValidateManifest["mypackage"]
 (* -> <|"Status" -> "OK", "FileCount" -> 3, "MissingFiles" -> {}, "Issues" -> {}|> *)
 

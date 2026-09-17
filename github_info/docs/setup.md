@@ -89,6 +89,15 @@ $packageDirectory/
 
 `[packageName]_info/docs/README.md` が存在する場合、`GitHubRefreshLocalPackageGroup` / `GitHubCreateRepository` / `GitHubRefreshAndCommit` はこれをリポジトリのトップレベル `README.md` としても配置します。`docs/README.md` 内の本文は docs フォルダ基準の相対リンク（`api.md` や `examples/...` など）で書かれているため、そのままトップレベルに置くとリンク切れになります。これを避けるため、ルート用コピーに限り相対リンクのリンク先へ `<packageName>_info/docs/` を前置してリポジトリルート基準に張り直します（`docs/README.md` 本体は変更されません）。張り直した結果が実際にはミラー内に存在しないファイルを指す場合は、誤ったリンク書き換えを避けるため元のリンクのまま保持されます。
 
+### 補助モジュール (`<packageName>_<aux>.wl`) の自動検出
+
+`upload_manifest.json` を読む内部処理 (`GitHubReadManifest` が呼び出す manifest 解決ロジック) は、`$packageDirectory` 内に存在する `<packageName>_<aux>.wl` 形式の補助ファイル（例: `documentation_paper2nb.wl`）を自動検出し、まだ `files` に列挙されていなければ manifest へ追加してからミラー (`GithubRepositories/[packageName]/`) へコピーします。この自動追加は以下を読み取り専用で除外した上で適用されます：
+
+- 競合コピー（OS の同期機能が作る `(1)` 付きファイルなど）
+- 先頭に `:CodePrivacyLevel:` マーカーがあり、値が `0` より大きいファイル（非公開コード）
+
+以前は、まだ manifest に載っていない補助モジュールがディスク上に存在すると、`PackageCommitDiff` の Added 判定や DryRun のプレビュー・コミットメッセージ・NoChange 判定が、実際にコミットされる内容と食い違うことがありました。この自動追加規則によりズレが解消されています。
+
 ## 次のステップ
 
 セットアップが完了したら、以下の機能をお試しください：
@@ -116,12 +125,14 @@ GitHubValidateManifest["myPackage"]
 (* <|"Status" -> "OK", "FileCount" -> 3, "MissingFiles" -> {}, "Issues" -> {}, ...|> *)
 ```
 
+`Issues` には `PrivateCodeFiles`（先頭に `:CodePrivacyLevel:` マーカーがあり値が `0` より大きいファイルが manifest 内に混入している場合）も報告されます。該当ファイルは公開リポジトリへコミットできないため、`upload_manifest.json` から外してください。
+
 ## 補足: ドキュメント鮮度ゲートと自動コミット
 
 `PackageCommit[packageName]` は、配布前の自動コミット駆動関数です。実行すると、以下の流れを経て安全にコミットを行います。
 
 1. **ドキュメント鮮度ゲート** (`PackageDocsFreshnessGate`): `packageName_info/docs` 配下の `api.md` / `api_*.md` が対応する `.wl` ファイル以降に更新されているかを検査します。`.wl` を更新したのにドキュメントが古いままの場合は `Blocked` となり、実コミットを停止します。
-2. **差分計算** (`PackageCommitDiff`): 前回コミットスナップショットと現ソースを内容比較し、追加・変更・削除ファイルを求めます。差分が無ければ `NoChange` となります。
+2. **差分計算** (`PackageCommitDiff`): 前回コミットスナップショットと現ソースを内容比較し、追加・変更・削除ファイルを求めます。差分が無ければ `NoChange` となります。上記の補助モジュール自動検出により、`files` に未列挙の `<packageName>_<aux>.wl` も差分計算前に manifest へ反映されるため、Added 判定に漏れなく現れます。
 3. **コミットメッセージ案の生成**: 差分から決定論的に単文メッセージを生成します。`claudecode` を併用する場合は `PackageLLMMessageGenerator` で LLM 生成に切り替えられます。
 
 ```mathematica

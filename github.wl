@@ -1826,9 +1826,9 @@ iCodePrivacyLevel[path_String] := Module[{st, bytes, head},
     ByteArray[Take[Normal[bytes], UpTo[4096]]], "ISO8859-1"], $Failed]];
   If[! StringQ[head], Return[0]];
   Replace[StringCases[head,
-      StartOfLine ~~ (" " | "\t") ... ~~ ("(*" | "<!--") ~~ Whitespace ... ~~
-        ":CodePrivacyLevel:" ~~ Whitespace ... ~~ lvl : NumberString ~~
-        Whitespace ... ~~ ("*)" | "-->") :> ToExpression[lvl], 1],
+      StartOfLine ~~ (" " | "\t") ... ~~ ("(*" | "<!--") ~~ WhitespaceCharacter ... ~~
+        ":CodePrivacyLevel:" ~~ WhitespaceCharacter ... ~~ lvl : NumberString ~~
+        WhitespaceCharacter ... ~~ ("*)" | "-->") :> ToExpression[lvl], 1],
     {{l_?NumericQ, ___} :> l, _ -> 0}]];
 
 (* manifest 対象 (個別 files + directories 配下の .wl/.m) から
@@ -4258,7 +4258,15 @@ PackageCommitDiff[pkg_String] := Module[
   If[! AssociationQ[manifest],
     manifest = <|"files" -> {pkg <> ".wl"},
       "directories" -> {pkg <> "_info"}, "excludePatterns" -> {}|>];
-  files = Lookup[manifest, "files", {}];
+  (* 2026-09-06: 実コミット (iRefreshPackageGroup → iEnsureManifest) は補助
+     <pkg>_<aux>.wl を manifest に自動追加してからミラーへコピーする。差分側が
+     ディスク上の manifest だけを見ると、まだ manifest に載っていない補助モジュール
+     (例: documentation_paper2nb.wl) が Added に現れず、DryRun プレビュー / コミット
+     メッセージ / NoChange 判定が実コミット内容と食い違っていた。同じ自動追加規則
+     (競合コピー除外・CodePrivacyLevel > 0 除外) を読み取り専用で適用する。 *)
+  files = DeleteDuplicates @ Join[Lookup[manifest, "files", {}],
+    Quiet @ Check[iDiscoverAuxWLFiles[pkg], {}]];
+  manifest["files"] = files;
   dirs = Lookup[manifest, "directories", {}];
   (* merged excludePatterns (manifest + default)。iMergedExcludePatterns と同形。 *)
   patterns = DeleteDuplicates @ Join[
