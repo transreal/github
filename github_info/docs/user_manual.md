@@ -59,7 +59,7 @@ GitHubEnsureLocalRepo["mypackage"]
 (* フォルダが存在しなければ作成してパスを返す *)
 ```
 
-`LocalRepoPath -> "/custom/path"` で保存先を変更できます。
+`LocalRepoPath -> "/custom/path"` で保存先を変更できます。`GithubRepositories/<pkg>` 以外のフォルダを `LocalRepoPath` に指定してコミットすると「外部フォルダ」として扱われます（「3. リモートリポジトリ操作」の「外部フォルダのコミット」を参照）。
 
 ---
 
@@ -257,6 +257,8 @@ GitHubCommit["mypackage", "fix: update algorithm"]
 GitHubCommit["mypackage", "feat: new feature", Branch -> "dev", CreateBranch -> True]
 ```
 
+`BaseBranch -> Automatic`（既定）のときは、リポジトリの default branch を API から自動取得して使用します。
+
 **エラーハンドリング:** blob 作成処理では `Catch`/`Throw` パターンを使用し、個々のファイルの読み込み失敗・blob 作成失敗・SHA 取得失敗を確実に検出して伝播します。blob 作成後にエントリが空の場合は `"EmptyEntries"` エラーを返します。tree SHA や blob SHA の検証では空文字列も不正値として扱います。
 
 主なエラータグ:
@@ -268,12 +270,22 @@ GitHubCommit["mypackage", "feat: new feature", Branch -> "dev", CreateBranch -> 
 | `"EmptyEntries"` | コミット対象のエントリが空（blob 作成の問題の可能性） |
 | `"MissingNewTreeSHA"` | 新しい tree SHA を取得できなかった |
 | `"NoLocalFiles"` | ローカル作業フォルダにファイルがない |
+| `"PublicRepositoryNotAllowed"` | 外部フォルダのコミットで、対象が公開リポジトリなのに `Public -> True` が明示されていない |
+| `"PrivateCodeBlocked"` | 外部フォルダを公開リポジトリへコミットしようとして、`CodePrivacyLevel > 0` のファイルが含まれていた |
 
 **422 競合リトライ:** 並列実行などで head SHA がずれた場合（HTTP 422 エラー）、head SHA を再取得して自動リトライします。リトライ回数は最大 3 回（既定値）です。3 回すべて失敗した場合は「並列実行を避けるか、時間をおいて再試行してください。」というメッセージを含む Failure を返します。
 
 **削除エントリの `"sha"` フィールド:** `DeleteMissing -> True` を使用する場合、削除対象ファイルの tree エントリの `"sha"` フィールドには `Null`（JSON `null` に対応）を指定します。`None` は JSON シリアライズできないため使用しないでください。
 
-主なオプション: `Branch`, `BaseBranch`, `CreateBranch`, `Force`, `DeleteMissing`, `Author`, `Committer`, `IncludePackageFile`, `Fallback`
+**外部フォルダへの対応（2026-09-30）:** `LocalRepoPath` が `GithubRepositories/<pkg>` 以外のフォルダ（`$packageDirectory` 直下やその他のサブフォルダを含む）を指す場合、そのフォルダは「外部フォルダ」として扱われ、次の関所が `GitHubCommit` 本体で適用されます。
+
+- **既定で private リポジトリにしかコミットしません。** 公開リポジトリへ送るには `Public -> True` を明示する必要があります（`True` 以外は不許可）。リポジトリの可視性を読み取れない応答も private とは見なしません（fail-closed）。
+- 公開を許した場合も、`CodePrivacyLevel > 0` のファイルが 1 つでもあれば `Failure["PrivateCodeBlocked"]` で止めます。
+- `.git/`・`.svn/`・`.hg/`・`desktop.ini`・`Thumbs.db`・`.DS_Store`・`~$*` と同期競合コピーは常に除外されます。`.gitignore` は解釈しないため、追加で除外したいものは `"ExcludePatterns" -> {"*.log", "build/"}`（相対パスの前方一致、`*` 可）で指定します。
+
+任意のフォルダを上げる場合は、専用の `GitHubFolderCommitPreview` / `GitHubFolderCommit` / `GitHubFolderCreateRepository`（後述）を使うことを推奨します。
+
+主なオプション: `Branch`, `BaseBranch`, `CreateBranch`, `Force`, `DeleteMissing`, `Author`, `Committer`, `IncludePackageFile`, `Public`（外部フォルダのみ）, `"ExcludePatterns"`（外部フォルダのみ）, `Fallback`
 
 ---
 
@@ -292,6 +304,78 @@ GitHubRefreshAndCommit["mypackage", "sync",
 ```
 
 主なオプション: `Owner`, `Repository`, `Branch`, `BaseBranch`, `CreateBranch`, `DeleteMissing`, `Force`, `Author`, `Committer`, `ExtraDirectories`, `Fallback`
+
+---
+
+### 外部フォルダのコミット（`GitHubFolderCommitPreview` / `GitHubFolderCommit` / `GitHubFolderCreateRepository`）
+
+`github.wl` は本来 `$packageDirectory` のパッケージ（manifest → `GithubRepositories/<pkg>` ミラー）を前提にしています。論文の計算結果フォルダなど、パッケージ以外の任意のフォルダを GitHub に上げるために、次の 3 関数が追加されました（2026-09-30）。
+
+**共通の方針:**
+
+- パッケージ管理下とみなすのは `GithubRepositories/<pkg>` 配下だけです。それ以外はすべて外部フォルダです（`$packageDirectory` が不明な場合もすべて外部フォルダ扱い = fail-closed）。
+- 既定では **private リポジトリにしかコミットしません**。公開リポジトリを対象にするには `Public -> True` を明示します。
+- 公開を許した場合も `CodePrivacyLevel > 0` のファイルは遮断されます（`Failure["PrivateCodeBlocked"]`）。
+- `.git/` `.svn/` `.hg/` `desktop.ini` `Thumbs.db` `.DS_Store` `~$*` と同期競合コピーは常に除外されます。`.gitignore` は解釈しないため、追加の除外は `"ExcludePatterns"`（相対パスの前方一致、`*` 可。空文字列は全件に前方一致してしまうため無視されます）で指定します。
+- 秘密情報らしい名前のファイル（`secret`, `token`, `credential` など）は **警告のみ**（`"Warnings"`）で、止めはしません（名前だけの推定のため）。
+- いずれも外部サービスへ問い合わせる・書き込む操作なので、**承認なしの自動実行はされません**（trusted head には登録されません）。読み取りだけの `GitHubFolderCommitPreview` も、任意のローカルフォルダを走査して GitHub に問い合わせるため同じ扱いです。
+- リポジトリ名は `Repository -> Automatic`（フォルダ名）または文字列で指定します。GitHub が受け付ける文字（英数字と `.` `_` `-` のみ、100 文字まで）だけが通ります。
+
+#### `GitHubFolderCommitPreview`
+フォルダ `dir` を既存リポジトリへコミットしたときの差分を、**実際には何も変更せずに**返します。ローカルとリモートの Git blob SHA を比較します。
+
+```mathematica
+GitHubFolderCommitPreview["C:/work/results", Repository -> "results-2026"]
+(* -> <|"Status" -> "Ready",
+       "Owner" -> "...", "Repository" -> "results-2026",
+       "Private" -> True, "Visibility" -> "private",
+       "Branch" -> "main",
+       "Added" -> {...}, "Changed" -> {...}, "RemoteOnly" -> {...},
+       "ChangeCount" -> 3,
+       "Changes" -> {<|"Change" -> "Added", "Path" -> "a.csv"|>, ...},
+       "Excluded" -> {...}, "Warnings" -> {...}|> *)
+```
+
+- `"Status"` は `"Ready"`（変更あり）または `"NoChange"`。
+- `"RemoteOnly"` はリモートにあってローカルに無いファイルです。`DeleteMissing -> True` のときは `"Changes"` に `"Deleted"` として、そうでなければ `"KeptOnRemote"` として載ります。`ChangeCount` は `DeleteMissing -> True` のときだけ削除分を含みます。
+- 公開リポジトリが対象で `Public -> True` が無い場合は `Failure["PublicRepositoryNotAllowed"]` を返します。
+- リモートのツリーが大きすぎて一覧が省略された場合は、差分を確定できないため失敗します。
+- 対象ブランチが存在せず、作成が許されている場合（`CreateBranch`）は、分岐元ブランチ（`BaseBranch`）と比較します。`BaseBranch -> Automatic` はリポジトリの default branch です。
+
+オプション: `Repository -> Automatic`, `Owner`, `Branch`, `BaseBranch`, `CreateBranch`, `DeleteMissing -> False`, `Public -> False`, `"ExcludePatterns" -> {}`
+
+#### `GitHubFolderCommit`
+フォルダ `dir` の内容を既存リポジトリへコミットします。
+
+```mathematica
+GitHubFolderCommit["C:/work/results", "Update results", Repository -> "results-2026"]
+(* -> <|"Status" -> "Committed", "Commit" -> ..., "CommitURL" -> ".../commit/<sha>",
+       "Branch" -> ..., "ChangeCount" -> ..., ...|> *)
+```
+
+- 実行直前に `GitHubFolderCommitPreview` と同じ差分・可視性の確認をやり直します（プレビュー後にフォルダや可視性が変わっていても拾うため）。変更がなければコミットを作らず `<|"Status" -> "NoChange"|>` を返します。
+- 公開リポジトリへは `Public -> True` を明示したときだけ送り、その場合も `CodePrivacyLevel > 0` のファイルがあれば `Failure["PrivateCodeBlocked"]` で止めます。
+- `DeleteMissing -> True` のときは、ローカルに無いリモートのファイルを削除します（事前に `GitHubFolderCommitPreview` で確認してください）。
+- ブランチは `Branch`（`Automatic` なら `BaseBranch`）で指定し、`CreateBranch -> Automatic` は `Branch =!= BaseBranch` のとき作成します。作成する場合も、非公開コードの関所はブランチ作成より前に通すため、途中で止まっても痕跡が残りません。
+
+オプション: `GitHubFolderCommitPreview` と同じもの + `Force -> False`, `Author`, `Committer`
+
+#### `GitHubFolderCreateRepository`
+GitHub に新しいリポジトリを作り、フォルダ `dir` の内容を最初のコミットとして上げます。
+
+```mathematica
+GitHubFolderCreateRepository["C:/work/results", Repository -> "results-2026"]
+GitHubFolderCreateRepository["C:/work/results",
+  Repository -> "results-2026", Description -> "計算結果", "CommitMessage" -> "Initial results"]
+```
+
+- 既定では private リポジトリを作ります。公開にするときは `Public -> True` を明示し、作成前に `CodePrivacyLevel` の関所を通します（作ってから止まると空の公開リポジトリが残るため）。
+- 同名のリポジトリが既にある場合は作成が失敗し（HTTP 422）、既存リポジトリへは何も送りません。既存へ上げるときは `GitHubFolderCommit` を使います。
+- 初期コミットは `auto_init` で作成します（空リポジトリには blob/tree API で積めないため）。
+- private を要求したのに作成結果が private でなければ、ファイルを送らずに失敗します。
+- リポジトリ作成後にファイルのコミットに失敗した場合は、「リポジトリは作成しましたが、ファイルのコミットに失敗しました。」というメッセージで失敗を返します（作成済みのリポジトリは残ります）。
+
+オプション: `Repository -> Automatic`（フォルダ名）, `Public -> False`, `Description`, `Homepage`, `GitignoreTemplate`, `LicenseTemplate`, `"ExcludePatterns" -> {}`, `"CommitMessage" -> Automatic`
 
 ---
 
@@ -740,28 +824,64 @@ GitHubRefreshAndCommit["mypackage", "feat: split into modules"]
 
 ---
 
-## 12. Undo 再評価防止ガード
+## 12. 外部フォルダ（パッケージ以外）を GitHub に上げる流れ
+
+論文の計算結果フォルダなど、`$packageDirectory` のパッケージではないフォルダを上げるときの手順です。いずれの関数も承認対象です。
+
+```mathematica
+(* 1. 新しいリポジトリを作って最初のコミットとして上げる（既定は private） *)
+GitHubFolderCreateRepository["C:/work/results",
+  Repository -> "results-2026",
+  "ExcludePatterns" -> {"*.log", "build/"}]
+
+(* 2. 以降の更新: まず差分をプレビュー（何も変更しない） *)
+GitHubFolderCommitPreview["C:/work/results", Repository -> "results-2026"]
+(* -> <|"Status" -> "Ready", "Added" -> {...}, "Changed" -> {...}, "Warnings" -> {...}, ...|> *)
+
+(* 3. 問題なければコミット（直前に差分・可視性を再確認する） *)
+GitHubFolderCommit["C:/work/results", "Update results", Repository -> "results-2026"]
+
+(* 公開リポジトリが対象のときだけ Public -> True を明示する *)
+GitHubFolderCommit["C:/work/results", "Update results",
+  Repository -> "results-2026", Public -> True]
+
+(* リモートにだけあるファイルも削除したい場合は、プレビューで確認してから *)
+GitHubFolderCommit["C:/work/results", "Sync",
+  Repository -> "results-2026", DeleteMissing -> True]
+```
+
+**注意事項:**
+- 既定では private リポジトリにしかコミットしません。公開リポジトリは `Public -> True` を明示したときだけ許可され、その場合も `CodePrivacyLevel > 0` のファイルがあれば `PrivateCodeBlocked` で止まります。
+- `.gitignore` は解釈されません。除外は `"ExcludePatterns"` で指定してください。
+- 秘密情報らしい名前のファイルは警告（`"Warnings"`）のみで、自動では止まりません。プレビューで確認してください。
+- リポジトリ名に使えるのは英数字と `.` `_` `-` のみ（100 文字まで）です。
+
+---
+
+## 13. Undo 再評価防止ガード
 
 `GitHubReviewPullRequest`、`GitHubReviewCommit`、および各 Grid のボタン操作には Undo 再評価防止ガードが組み込まれています。ノートブックの Undo 操作により同じアクションが二重に実行されることを防ぎます。ガードは `WithCleanup` で正常終了・異常終了のいずれの場合も自動的に解除されます。
 
 ---
 
-## 13. 主要オプション一覧
+## 14. 主要オプション一覧
 
 | オプション | 既定値 | 説明 |
 |---|---|---|
 | `Owner` | `Automatic` | GitHub オーナー名（Automatic でトークンから取得、RepoDB に登録があればそちらを優先） |
-| `Repository` | `Automatic` | リポジトリ名（Automatic で packageName を使用、RepoDB に登録があればそちらを優先） |
+| `Repository` | `Automatic` | リポジトリ名（Automatic で packageName を使用、RepoDB に登録があればそちらを優先。`GitHubFolder*` ではフォルダ名） |
 | `Branch` | `Automatic` | 操作対象ブランチ |
-| `BaseBranch` | `Automatic` | ベースブランチ（デフォルトブランチを自動取得） |
+| `BaseBranch` | `Automatic` | ベースブランチ（リポジトリの default branch を API から自動取得） |
 | `CreateBranch` | `Automatic` | ブランチが存在しなければ作成するか（Automatic の場合 Branch ≠ BaseBranch なら True） |
-| `Public` | `False` | リポジトリを公開にするか |
+| `Public` | `False` | 新規リポジトリを公開にするか。`GitHubFolderCommit` / `GitHubFolderCommitPreview` / 外部フォルダを `LocalRepoPath` に渡した `GitHubCommit` では「公開リポジトリへのコミットを許可するか」の意味になり、`True` を明示したときだけ許可される |
 | `AutoInit` | `True` | 初期化時に README を含めるか |
 | `Clean` | `False` | Pull 時にローカルを先に削除するか |
 | `Force` | `False` | ref 更新を強制するか |
-| `DeleteMissing` | `False` | Commit 時にリモート専用ファイルを削除するか（削除エントリの `"sha"` には JSON `null` に対応する `Null` を指定。`None` は JSON シリアライズ不能なため使用不可） |
+| `DeleteMissing` | `False` | Commit 時にリモート専用ファイルを削除するか（削除エントリの `"sha"` には JSON `null` に対応する `Null` を指定。`None` は JSON シリアライズ不能なため使用不可）。`GitHubFolderCommit` でも同様で、実行前にプレビューで確認すること |
 | `ReturnType` | `"Text"` | `GitHubReadFile` の戻り値型（`"Text"` / `"ByteArray"` / `"Bytes"`） |
-| `LocalRepoPath` | `Automatic` | ローカル作業フォルダのパス |
+| `LocalRepoPath` | `Automatic` | ローカル作業フォルダのパス。`GithubRepositories/<pkg>` 以外を指定すると外部フォルダとして扱われ、コミット先は既定で private リポジトリに限られる（公開は `Public -> True` を明示） |
+| `"ExcludePatterns"` | `{}` | 外部フォルダのコミットで追加除外するパターン（相対パスの前方一致、`*` 可）。`GitHubFolderCommitPreview` / `GitHubFolderCommit` / `GitHubFolderCreateRepository` / 外部フォルダの `GitHubCommit` で有効 |
+| `"CommitMessage"` | `Automatic` | `GitHubFolderCreateRepository` の最初のコミットのメッセージ |
 | `Author` | `Automatic` | コミット author `<\|"name"->..., "email"->...\|>` |
 | `Committer` | `Automatic` | コミット committer `<\|"name"->..., "email"->...\|>` |
 | `Draft` | `False` | Draft PR として作成するか |

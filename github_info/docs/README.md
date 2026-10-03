@@ -14,9 +14,13 @@ APIキーをコード中に直書きしない安全設計を採用していま�
 
 単純な `.wl` ファイル単体のアップロードだけでなく、パクレット（フォルダ型パッケージ）や付属ドキュメント群をまとめて同期するために、**マニフェスト**（`packageName_info/upload_manifest.json`）を導入しています。マニフェストにはアップロード対象ファイル・ディレクトリ・除外パターンを記述でき、パッケージ種別（`.wl` 単体 / パクレットフォルダ）を自動検出して初回は自動生成されます。パッケージ種別が変更された場合（`.wl` からパクレットへの変換など）もマニフェストは自動更新されます。`_info/docs/README.md` が存在する場合はリポジトリのトップレベル `README.md` として自動配置されるため、ドキュメント管理も一元化できます。`_info/history/`・`_info/references/`・`_info/docs/docs/` のようなネストした重複フォルダは、マニフェストの設定に関わらず常に除外対象として保護されます。特に `docs/docs/` パターンは過去の同期事故に由来する残骸で、混入すると pull のたびにローカルへ再生成されてしまうため、必要であれば手動で削除してください（自動削除はされません）。
 
-ファイル先頭付近（4096バイト以内）に機械可読マーカー `(* :CodePrivacyLevel: 0.1 *)`（`.md` では `<!-- :CodePrivacyLevel: x -->`）を置くことで「ソースコード自体を非公開にする」ことを宣言できる**非公開コード関所**を備えています。マニフェスト対象ファイルにこの値が `0` より大きいものが1つでも含まれると、`GitHubRefreshLocalPackageGroup` / `GitHubRefreshAndCommit` / `GitHubCreateRepository` の内部リフレッシュ処理は一切コピーを行わず fail-closed で遮断されるため、意図せず非公開コードが部分的に公開リポジトリへ混入することを防ぎます。`GitHubValidateManifest` でも同じ違反を事前に検出できます。
+ファイル先頭付近（4096バイト以内）に機械可読マーカー `(* :CodePrivacyLevel: 0.1 *)`（`.md` では `<!-- :CodePrivacyLevel: x -->`）を置くことで「ソースコード自体を非公開にする」ことを宣言できる**非公開コード関所**を備えています。マニフェスト対象ファイルにこの値が `0` より大きいものが1つでも含まれると、`GitHubRefreshLocalPackageGroup` / `GitHubRefreshAndCommit` / `GitHubCreateRepository` の内部リフレッシュ処理は一切コピーを行わず fail-closed で遮断されるため、意図せず非公開コードが部分的に公開リポジトリへ混入することを防ぎます。外部フォルダ経路で公開が許可された場合も同じ関所を通ります。`GitHubValidateManifest` でも同じ違反を事前に検出できます。
 
 ミラーへのリフレッシュ時には、すべての `.md` ファイルに対して先頭の偽 front matter（独立した `---` 行）を自動除去します（GitHub がこれを YAML front matter として誤解釈し本文が消えてしまう事故を防ぐため）。本物の front matter（閉じ `---` と `key: value` を持つもの）はそのまま保持されます。また `_info/docs/README.md` をトップレベル `README.md` として配置する際は、本文中の相対リンク（`api.md`・`examples/...` など）が docs フォルダ基準で書かれているためそのままではリンク切れになる問題を避けるべく、ルート用コピーに限り `<packageName>_info/docs/` を前置してリポジトリルート基準に自動的に張り直します（リンク先がミラーに実在する場合のみ置換し、`docs/README.md` 本体は変更しません）。
+
+## 外部フォルダのコミットと公開ガード
+
+`GithubRepositories/<packageName>` 配下だけが「パッケージ管理下」のフォルダで、`$packageDirectory` 直下やその他のサブフォルダは**外部フォルダ**として扱われます。論文の計算結果フォルダなど、パッケージ以外の任意のフォルダも GitHub へ反映できるよう、`GitHubFolderCommitPreview` / `GitHubFolderCommit` / `GitHubFolderCreateRepository` を用意しています。外部フォルダのコミットは**既定で private リポジトリにのみ許可**され、公開リポジトリへは `Public -> True` を明示したときだけ許可されます（可視性が読めない応答も fail-closed）。この関所は `GitHubCommit` 本体にあるため、`LocalRepoPath` を直接渡す呼び方でも同じ判定を通ります。外部フォルダでは `.git/`・`desktop.ini`・`Thumbs.db`・`.DS_Store`・同期競合コピーなどを常に除外し、`.gitignore` は解釈せず `"ExcludePatterns"` で指定します。
 
 ## 複数ファイルのパッケージ対応
 
@@ -94,7 +98,7 @@ FileExistsQ[FileNameJoin[{$packageDirectory, "NBAccess.wl"}]]
 
 #### 2. パッケージファイルの配置
 
-`github_fixed.wl` を `$packageDirectory` にコピーします。
+`github.wl` を `$packageDirectory` にコピーします。
 
 ```wolfram
 (* $packageDirectory の場所を確認 *)
@@ -107,7 +111,7 @@ $packageDirectory
 
 ```wolfram
 Block[{$CharacterEncoding = "UTF-8"},
-  Needs["GitHubREST`", "github_fixed.wl"]];
+  Needs["GitHubREST`", "github.wl"]];
 ```
 
 #### 4. GitHub API キーの設定
@@ -144,7 +148,7 @@ $GitHubLicenseHolder = "Katsunobu Imai"
 ```wolfram
 (* 1. パッケージの読み込み *)
 Block[{$CharacterEncoding = "UTF-8"},
-  Needs["GitHubREST`", "github_fixed.wl"]];
+  Needs["GitHubREST`", "github.wl"]];
 
 (* 2. $packageDirectory 内のパッケージ URL 一覧を確認 *)
 GitHubPackageURLs[]
@@ -196,11 +200,14 @@ GitHubInstallPackage["pkg", "https://github.com/alice/repo"]
 | `Repository` | `Automatic` | リポジトリ名（省略時は packageName、非 ASCII なら自動翻訳） |
 | `Branch` | `Automatic` | 操作対象ブランチ |
 | `BaseBranch` | `Automatic` | デフォルトブランチ（API から自動取得） |
-| `Public` | `False` | `True` で公開リポジトリ作成 |
+| `Public` | `False` | `True` で公開リポジトリ作成。外部フォルダを公開リポジトリへコミットする際も明示が必要 |
 | `CreateBranch` | `Automatic` | ブランチ不在時に自動作成するか（`Branch =!= BaseBranch` なら `True`） |
 | `DeleteMissing` | `False` | ローカルに無いリモートファイルを削除するか（`True` の前に `PackageCommitDeletionPreview` での事前確認を推奨） |
 | `MaxItems` | `30` | `GitHubListCommits` / `GitHubCommitDataset` で取得するコミット数の上限 |
 | `ExtraDirectories` | `{}` | マニフェストに永続追加するディレクトリのリスト（例: `{"Claude Directives"}`） |
+| `LocalRepoPath` | `Automatic` | ローカル作業フォルダの明示指定（`GithubRepositories/<pkg>` 以外は外部フォルダ扱い） |
+| `PackageFile` | `Automatic` | 元の `.wl` パスを明示指定 |
+| `Clean` | `False` | `GitHubPull` で取得前に既存ローカルファイルを削除 |
 | `Fallback` | `False` | `True` で API 制限時に代替モデルでの処理を有効化 |
 | `"DryRun"` | `True` | `PackageCommit` で実コミットせず計画とメッセージ案のみ返す |
 | `"SkipDocsGate"` | `False` | `PackageCommitPlan` / `PackageCommit` の DryRun 時のみドキュメント鮮度ゲートをスキップ（実コミットでは無効） |
@@ -210,73 +217,78 @@ GitHubInstallPackage["pkg", "https://github.com/alice/repo"]
 #### URL / リポジトリ情報
 
 - **`GitHubPackageURL[name]`** — `$packageDirectory` 内パッケージの GitHub URL を返す
-- **`GitHubPackageURLs[]`** — 全パッケージの `<|name -> url|>` を返す。トークン・RepoDB の読み込みと owner 解決（`GET /user`）をまとめて 1 回ずつだけ行うよう最適化されており、パッケージ数が多くても高速（結果は `GitHubPackageURL` を個別に呼んだ場合と同一）。認証ユーザーの login はトークンごとに TTL キャッシュされる
+- **`GitHubPackageURLs[]`** — 全パッケージの `<|name -> url|>` を返す。トークン・RepoDB の読み込みと owner 解決（`GET /user`）をまとめて 1 回ずつだけ行うよう最適化されており、パッケージ数が多くても高速。認証ユーザーの login はトークンごとに TTL キャッシュされる
 - **`GitHubRepoPath[name]`** — ローカル作業フォルダのパスを返す
 - **`GitHubEnsureLocalRepo[name]`** — ローカル作業フォルダを作成して返す
 
 #### マニフェスト / ローカル同期
 
-- **`GitHubReadManifest[name]`** — `packageName_info/upload_manifest.json` を読む（不在時は自動生成）。パッケージ種別変更時は自動更新。`<<パッケージ名>>_*.wl` 形式の補助ファイルを `$packageDirectory` から自動検出してマニフェストに追加する（競合コピーや非公開コードは除外）
-- **`GitHubValidateManifest[name]`** — `upload_manifest.json` を検査し、ファイルの実在確認・機密情報らしきファイルの混入チェック・非公開コード（`CodePrivacyLevel > 0`）の混入チェック・除外パターンの確認を行う。コミット・配布前の健全性チェックとして使用する
-- **`GitHubRefreshLocalPackageGroup[name]`** — マニフェストに従いファイルをローカル作業フォルダへコピー。`_info/originals/` の内容を元のリポジトリパスへ書き戻す処理（`iRestoreOriginalsToRepo`）も実行する。ソース側で削除されたファイルはローカルリポジトリからも自動クリーンアップされる。`_info/history/`・`_info/references/`・`_info/docs/docs/` は常に保護され取り込まれない。コピーした `.md` の偽 front matter（先頭の独立した `---`）を自動除去し、トップ README.md の相対リンクはルート基準へ自動張り直しされる。非公開コード（`CodePrivacyLevel > 0`）が対象に含まれる場合は何もコピーせず fail-closed で遮断する
+- **`GitHubReadManifest[name]`** — `upload_manifest.json` を読む（不在時は自動生成、パッケージ種別変更時は自動更新）。`<<パッケージ名>>_*.wl` 形式の補助ファイルを自動検出して追加する（競合コピーや非公開コードは除外）
+- **`GitHubValidateManifest[name]`** — ファイルの実在確認・機密情報らしきファイルの混入チェック・非公開コード（`CodePrivacyLevel > 0`）の混入チェック・除外パターンの確認を行う。コミット・配布前の健全性チェック
+- **`GitHubRefreshLocalPackageGroup[name]`** — マニフェストに従いファイルをローカル作業フォルダへコピー。`_info/originals/` の書き戻し、削除ファイルのクリーンアップ、`_info/history/`・`_info/references/`・`_info/docs/docs/` の保護、`.md` の偽 front matter 除去、トップ README.md の相対リンク張り直しを行う。非公開コードが対象に含まれる場合は fail-closed で遮断する
 - **`GitHubRefreshLocalPackage[name]`** — `.wl` 単体をローカルへコピー（後方互換用）
 
 #### 差分ベースの自動コミット（旧 PackageAutoCommit、github.wl に統合）
 
-- **`PackageDocsFreshnessGate[name]`** — `_info/docs/` の `api.md` / `api_*.md` が対応する `.wl` 以降に更新されているか検査する。古い場合は `Proceed -> False`。doc 生成ツールが記録するコンテンツハッシュを優先的に参照し、記録が無い場合のみ更新日時比較にフォールバックする
-- **`PackageCommitDiff[name]`** — 前回コミットスナップショットと現ソースを内容比較し、追加・変更・削除ファイルを求める（ReadOnly。リフレッシュ前に呼ぶ）。補助 `.wl` ファイルの自動収集規則を実コミット経路と同じ形で反映する
-- **`PackageCommitPlan[name]`** — ゲート → 差分 → メッセージ案を ReadOnly に組み立てる。通過かつ差分ありのときのみ `Status -> "OK"`。`"SkipDocsGate" -> True` を指定すると DryRun のプレビューに限りゲートを無視できる
-- **`PackageCommit[name]`** — 計画を実行し、`Status -> "OK"` のときだけ実コミット。**既定は `"DryRun" -> True`**。ドキュメントが古い／差分なしなら安全に短絡停止する。実コミットでは `"SkipDocsGate"` は無効
-- **`PackageCommitDeletionPreview[name]`** — `DeleteMissing -> True` でコミットする前に、削除対象となるファイルパスの一覧を確認する読み取り専用関数。実際には何も削除しない
-- **`PackageLLMMessageGenerator[queryFn]`** — 実際の変更行を要約する content-aware なコミットメッセージ生成器（`diff -> String`）を返す。モデル指定子を渡すと claudecode で自動ラップ
-- **`$PackageCommitModel`** — `PackageCommitPlan` / `PackageCommit` の既定メッセージ生成方式を決めるモデル指定（既定 `Automatic`。claudecode ロード済みなら内容ベース生成、`None` なら常に決定論的な単文生成）
+- **`PackageDocsFreshnessGate[name]`** — `_info/docs/` の `api.md` / `api_*.md` が対応する `.wl` 以降に更新されているか検査する。コンテンツハッシュを優先し、無い場合のみ更新日時比較にフォールバック
+- **`PackageCommitDiff[name]`** — 前回コミットスナップショットと現ソースを内容比較し、追加・変更・削除ファイルを求める（ReadOnly。リフレッシュ前に呼ぶ）
+- **`PackageCommitPlan[name]`** — ゲート → 差分 → メッセージ案を ReadOnly に組み立てる。`"SkipDocsGate" -> True` で DryRun のプレビューに限りゲートを無視できる
+- **`PackageCommit[name]`** — 計画を実行し、`Status -> "OK"` のときだけ実コミット。**既定は `"DryRun" -> True`**
+- **`PackageCommitDeletionPreview[name]`** — `DeleteMissing -> True` でのコミット前に、削除対象ファイルの一覧を確認する読み取り専用関数
+- **`PackageLLMMessageGenerator[queryFn]`** — 実際の変更行を要約する content-aware なコミットメッセージ生成器を返す
+- **`$PackageCommitModel`** — 既定メッセージ生成方式（既定 `Automatic`、`None` で常に決定論的な単文生成）
 - **`$PackageAutoCommitVersion`** — 自動コミット機能のバージョン
 
 #### リポジトリ操作
 
-- **`GitHubCreateRepository[name]`** — GitHub に新規リポジトリを作成し、ファイルを初回コミット。`ExtraDirectories` でマニフェストにディレクトリを追加可能。非公開コード（`CodePrivacyLevel > 0`）が対象に含まれる場合は `GitHubRefreshLocalPackageGroup` と同様に遮断される
+- **`GitHubCreateRepository[name]`** — GitHub に新規リポジトリを作成し、ファイルを初回コミット。`ExtraDirectories` でディレクトリを追加可能。非公開コード関所が適用される
 - **`GitHubReadFile[name, path]`** — GitHub 上のファイルを読み取る
-- **`GitHubReadLocalFile[name]` / `GitHubReadLocalFile[name, path]`** — ローカルファイルを `$CharacterEncoding` に依存せず常に UTF-8 でデコードして返す。`path` 省略時はパッケージの `.wl` ファイルを読む。`GitHubReadFile` との内容比較や日本語環境での文字化け回避に使用する
-- **`GitHubPull[name]`** — リモートの内容をローカル作業フォルダへ取得
-- **`GitHubCommit[name, message]`** — ローカル作業フォルダの内容を GitHub へ一括コミット。blob 作成時のエラーは `Catch`/`Throw` パターンで確実に伝播され、エントリ空・SHA 欠落・空文字列も検出する。削除エントリの `"sha"` フィールドには `Null`（JSON `null`）を指定し、`None` は使用しない
-- **`GitHubRefreshAndCommit[name, message]`** — リフレッシュ → コミットを一括実行。`<<パッケージ名>>_*.wl` 形式の補助ファイルも自動的に含まれる。`ExtraDirectories` でマニフェストにディレクトリを追加可能
+- **`GitHubReadLocalFile[name]` / `GitHubReadLocalFile[name, path]`** — ローカルファイルを常に UTF-8 でデコードして返す。`GitHubReadFile` との内容比較や日本語環境での文字化け回避に使用する
+- **`GitHubPull[name]`** — リモートの内容をローカル作業フォルダへ取得（`Clean -> True` で既存ファイルを先に削除）
+- **`GitHubCommit[name, message]`** — ローカル作業フォルダの内容を GitHub へ一括コミット。blob 作成時のエラーは確実に伝播される。`LocalRepoPath` が外部フォルダを指す場合は既定で private リポジトリにのみコミットし、公開には `Public -> True` が必要
+- **`GitHubRefreshAndCommit[name, message]`** — リフレッシュ → コミットを一括実行。補助ファイルも自動的に含まれる
+
+#### 外部フォルダ（パッケージ以外の任意フォルダ）
+
+- **`GitHubFolderCommitPreview[dir]`** — 外部フォルダのコミット前に差分を確認する
+- **`GitHubFolderCommit[dir, message]`** — 外部フォルダの内容を GitHub へコミットする。既定では private リポジトリのみ許可
+- **`GitHubFolderCreateRepository[dir]`** — 外部フォルダから新規リポジトリを作成する。リポジトリ名は既定でフォルダ名
 
 #### プルリクエスト管理
 
-- **`GitHubSubmitPullRequest[name, title, message]`** — refresh → branch 作成 → commit → PR 作成を一括実行。ブランチ名は `pr/packageName/日時-slugified-title` で自動生成
+- **`GitHubSubmitPullRequest[name, title, message]`** — refresh → branch 作成 → commit → PR 作成を一括実行
 - **`GitHubListPullRequests[name]`** — オープン PR 一覧を優先度・依存関係でソートして返す
 - **`GitHubPullRequestDataset[name]`** — PR 一覧を Review / Pull / Merge / Close ボタン付き Grid で返す
-- **`GitHubMergePullRequest[name, prNumber, reason]`** — PR をマージする（理由をコメントとして記録）
-- **`GitHubClosePullRequest[name, prNumber, reason]`** — PR をクローズする（理由をコメントとして記録）
-- **`GitHubReviewPullRequest[name, prNumber]`** — PR のコードをダウンロードしてノートブックに CellGroup として出力する
-- **`GitHubCreatePullRequest[name, title]`** — PR を作成する。head と base が同一ブランチの場合はエラーメッセージで代替手段を案内
+- **`GitHubMergePullRequest[name, prNumber, reason]`** — PR をマージする
+- **`GitHubClosePullRequest[name, prNumber, reason]`** — PR をクローズする
+- **`GitHubReviewPullRequest[name, prNumber]`** — PR のコードをノートブックに CellGroup として出力する
+- **`GitHubCreatePullRequest[name, title]`** — PR を作成する。head と base が同一ブランチの場合は代替手段を案内
 
 #### コミット履歴管理
 
-- **`GitHubListCommits[name]`** — リポジトリのコミット履歴をリストで返す。オプション: `Owner`, `Repository`, `Branch`, `MaxItems`
-- **`GitHubCommitDataset[name]`** — コミット履歴を Review / Pull / Revert ボタン付き Grid で表示する。表示時に既存スナップショットを削除して現在の作業状態を新規保存し、#0 行（ローカル最新版）への復元ボタンも表示される。Grid はタグ付き Output セルとして出力され、再実行時に古いセルは自動削除される。オプション: `Owner`, `Repository`, `Branch`, `MaxItems`
-- **`GitHubReviewCommit[name, sha]`** — 指定コミットの詳細・差分をノートブックに CellGroup として表示する。Pull / Revert ボタン付き
-- **`GitHubRevertCommit[name, sha, reason]`** — 指定コミットの変更を打ち消すリバートコミットを作成する（親コミットの tree を使用）
+- **`GitHubListCommits[name]`** — コミット履歴をリストで返す
+- **`GitHubCommitDataset[name]`** — コミット履歴を Review / Pull / Revert ボタン付き Grid で表示する。#0 行（ローカル最新版）への復元ボタンも表示される
+- **`GitHubReviewCommit[name, sha]`** — 指定コミットの詳細・差分をノートブックに表示する
+- **`GitHubRevertCommit[name, sha, reason]`** — 指定コミットの変更を打ち消すリバートコミットを作成する
 
 #### リポジトリ名データベース（日本語対応）
 
 - **`GitHubRepoDB[]`** — `repo_database.json` の全レコードを返す
-- **`GitHubRepoDBSet[name, repoName]`** — パッケージ名 → リポジトリ名の対応を登録
-- **`GitHubRepoDBSet[name, repoName, owner]`** — パッケージ名 → リポジトリ名 + owner を登録。他人のリポジトリをインストールする際に `GitHubInstallPackage[name, url]` が自動的に呼び出す
+- **`GitHubRepoDBSet[name, repoName]`** / **`GitHubRepoDBSet[name, repoName, owner]`** — パッケージ名 → リポジトリ名（および owner）を登録
 - **`GitHubRepoDBLookup[name]`** — DB からリポジトリ名を解決（未登録なら `name` をそのまま返す）
 
-未登録の非 ASCII パッケージ名は [claudecode](https://github.com/transreal/claudecode) の Claude API を呼び出して意味のある英語リポジトリ名を 3 候補生成し、GitHub 上の重複を確認した上で自動登録します。全候補が重複する場合はサフィックス（`-2` ～ `-20`）または日付が付与されます。RepoDB に `owner` が登録されている場合、`iResolveOwner` はトークンからの自動取得よりも RepoDB の値を優先します。
+未登録の非 ASCII パッケージ名は [claudecode](https://github.com/transreal/claudecode) の Claude API により英語リポジトリ名が 3 候補生成され、重複確認の上で自動登録されます。RepoDB に `owner` が登録されている場合、トークンからの自動取得より RepoDB の値が優先されます。
 
 #### パッケージ管理
 
 - **`GitHubInstallPackage[name]`** — GitHub から `$packageDirectory` へ初回ダウンロード。`Owner` オプションで所有者を指定可能
-- **`GitHubInstallPackage[name, url]`** — GitHub URL を直接指定して他者のリポジトリをインストール。`url` から owner・repository 名を解析して `repo_database.json` に自動登録し、以後はパッケージ名だけで操作できる
-- **`GitHubUpdatePackage[name]`** — 既存パッケージを GitHub 最新版に更新（内部的に `GitHubInstallPackage` と同じ処理）
+- **`GitHubInstallPackage[name, url]`** — GitHub URL を直接指定して他者のリポジトリをインストールし、`repo_database.json` に自動登録
+- **`GitHubUpdatePackage[name]`** — 既存パッケージを GitHub 最新版に更新
 
 #### グローバル変数
 
-- **`$GitHubLicenseHolder`** — MIT ライセンスの著作権者名。空文字列 `""` の場合、ライセンスセクションは `README.md` に挿入されません。例: `$GitHubLicenseHolder = "Katsunobu Imai"`
-- **`$PackageCommitModel`** — `PackageCommit` / `PackageCommitPlan` の既定メッセージ生成方式（既定 `Automatic`。`None` で常に決定論的な単文生成に固定）
+- **`$GitHubLicenseHolder`** — MIT ライセンスの著作権者名（空文字列ならライセンスセクションは挿入されない）
+- **`$PackageCommitModel`** — `PackageCommit` / `PackageCommitPlan` の既定メッセージ生成方式
 - **`$PackageAutoCommitVersion`** — 差分ベース自動コミット機能のバージョン
 
 ### ドキュメント一覧
@@ -284,7 +296,7 @@ GitHubInstallPackage["pkg", "https://github.com/alice/repo"]
 | ファイル | 内容 |
 |---------|------|
 | `api.md` | 全関数・オプションのリファレンス |
-| `setup.md` | セットアップガイド（要件・インストール・API キー設定・自動コミット・トラブルシューティング） |
+| `setup.md` | セットアップガイド（要件・インストール・API キー設定・自動コミット・外部フォルダ・トラブルシューティング） |
 | `user_manual.md` | 各関数の詳細な使い方と引数説明 |
 | `examples/example.md` | 典型的なユースケースのコード例 |
 | `examples/autocommit.md` | 差分ベース自動コミット関数群（`PackageDocsFreshnessGate` / `PackageCommitDiff` / `PackageCommitPlan` / `PackageCommit` / `PackageCommitDeletionPreview` / `PackageLLMMessageGenerator`）の実行例集 |
@@ -360,6 +372,18 @@ PackageCommitDeletionPreview["mypackage"]
 
 (* 確認後、削除を伴う実コミットを行う *)
 PackageCommit["mypackage", "DryRun" -> False, "DeleteMissing" -> True]
+```
+
+### 外部フォルダ（論文の計算結果など）のコミット
+
+```wolfram
+(* パッケージ以外の任意フォルダ。既定では private リポジトリにのみコミットされる *)
+GitHubFolderCommitPreview["C:\\work\\paper-results"]
+GitHubFolderCreateRepository["C:\\work\\paper-results"]
+GitHubFolderCommit["C:\\work\\paper-results", "add: 計算結果を更新"]
+
+(* 公開リポジトリへ反映する場合は Public -> True を明示（非公開コード関所も適用） *)
+GitHubFolderCommit["C:\\work\\paper-results", "publish", Public -> True]
 ```
 
 ### 既存パッケージの更新とプルリクエスト

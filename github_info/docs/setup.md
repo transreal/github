@@ -85,6 +85,8 @@ $packageDirectory/
 
 なお、`GithubRepositories/[packageName]/` は GitHub へのアップロード内容であると同時に、**前回コミット時のスナップショット**としても機能します。`PackageCommitDiff` / `PackageCommit` はこのスナップショットと現ソースを内容比較して差分を求めるため、リフレッシュ前に呼び出す必要があります。
 
+`GithubRepositories/[packageName]/` 配下だけが「パッケージ管理下」のフォルダです。`$packageDirectory` 直下やその他のサブフォルダを含め、これ以外のフォルダは**外部フォルダ**として扱われます（詳細は後述の「補足: 外部フォルダのコミット」を参照）。
+
 `[packageName]_info/docs/docs/` のようなネストした重複フォルダは、マニフェストの有無にかかわらず常にデフォルト除外パターンで保護されます。過去の同期事故に由来する残骸で、混入すると pull のたびにローカルへ再生成されてしまうため、必要であれば手動で削除してください（自動削除はされません）。
 
 `[packageName]_info/docs/README.md` が存在する場合、`GitHubRefreshLocalPackageGroup` / `GitHubCreateRepository` / `GitHubRefreshAndCommit` はこれをリポジトリのトップレベル `README.md` としても配置します。`docs/README.md` 内の本文は docs フォルダ基準の相対リンク（`api.md` や `examples/...` など）で書かれているため、そのままトップレベルに置くとリンク切れになります。これを避けるため、ルート用コピーに限り相対リンクのリンク先へ `<packageName>_info/docs/` を前置してリポジトリルート基準に張り直します（`docs/README.md` 本体は変更されません）。張り直した結果が実際にはミラー内に存在しないファイルを指す場合は、誤ったリンク書き換えを避けるため元のリンクのまま保持されます。
@@ -109,6 +111,7 @@ $packageDirectory/
 5. **ローカルファイルの UTF-8 読み取り**: `GitHubReadLocalFile["packageName", "path"]`
 6. **差分ベースの自動コミット**: `PackageCommit["packageName"]`（既定は DryRun。計画とコミットメッセージ案のみを返します）
 7. **削除候補の事前確認**: `PackageCommitDeletionPreview["packageName"]`（`DeleteMissing -> True` でのコミット前に必ず確認）
+8. **外部フォルダの差分確認とコミット**: `GitHubFolderCommitPreview["dir"]` / `GitHubFolderCommit["dir", "message"]` / `GitHubFolderCreateRepository["dir"]`（論文の計算結果フォルダなど、パッケージ以外の任意のフォルダ用）
 
 詳細な使用方法については、各機能のヘルプドキュメントをご参照ください。
 
@@ -159,6 +162,63 @@ PackageCommitDeletionPreview["myPackage"]
 (* 確認後、削除を伴う実コミットを行う場合 *)
 PackageCommit["myPackage", "DryRun" -> False, "DeleteMissing" -> True]
 ```
+
+## 補足: 外部フォルダのコミット
+
+`github.wl` は `$packageDirectory` のパッケージ (manifest → `GithubRepositories/<pkg>` ミラー) を前提にしていますが、論文の計算結果フォルダなど任意のフォルダを GitHub に上げたい場合のために、外部フォルダ用の関数が用意されています。
+
+| 関数 | 役割 |
+|---|---|
+| `GitHubFolderCommitPreview[dir]` | 既存リポジトリへコミットしたときの差分を、何も変更せずに返す（読み取り専用） |
+| `GitHubFolderCommit[dir, message]` | 既存リポジトリへフォルダの内容をコミットする |
+| `GitHubFolderCreateRepository[dir]` | 新しいリポジトリを作り、フォルダの内容を最初のコミットとして上げる |
+
+### 安全方針
+
+- **既定は private のみ**: 外部フォルダは既定で private リポジトリにしかコミットしません。公開リポジトリが対象のときは `Failure["PublicRepositoryNotAllowed"]` になります。公開リポジトリへ送るには `Public -> True` を明示してください（`True` 以外は不許可）。可視性を読み取れない応答も private とは見なされません (fail-closed)。
+- **非公開コードの遮断**: 公開を許した場合も、`CodePrivacyLevel > 0` のファイルがあれば `Failure["PrivateCodeBlocked"]` で止まります。`GitHubFolderCreateRepository` で公開リポジトリを作る場合は、リポジトリを作る前にこの関所を通すため、空の公開リポジトリが残ることはありません。
+- **`GitHubCommit` 本体でも同じ判定**: `LocalRepoPath` に `GithubRepositories/<pkg>` 以外のフォルダを渡した従来の `GitHubCommit` 呼び出しでも、同じ判定（既定は private のみ、`Public -> True` の明示が必要）が適用されます。
+- **承認対象**: `GitHubFolder*` はいずれも承認なしの自動実行をしません。読み取り専用の `GitHubFolderCommitPreview` も、任意のローカルフォルダを走査して GitHub に問い合わせるため同じ扱いです。
+
+### 除外
+
+次のものは常に除外されます: `.git/` `.svn/` `.hg/` `desktop.ini` `Thumbs.db` `.DS_Store` `~$*`、および同期競合コピー。`.gitignore` は解釈されません。追加で除外したいものは `"ExcludePatterns" -> {"*.log", "build/"}`（相対パスの前方一致、`*` 可）で指定します。空文字列のパターンは無視されます。
+
+secret / token / credential など秘密情報らしい名前のファイルは警告 (`"Warnings"`) として報告されますが、名前だけの推定なのでコミットは止めません。
+
+### オプション
+
+| オプション | 既定値 | 説明 |
+|---|---|---|
+| `Repository` | `Automatic` | リポジトリ名。`Automatic` はフォルダ名。GitHub が受け付ける文字（英数字と `.` `_` `-`、100 文字まで）のみ |
+| `Owner` | `Automatic` | 所有者。パッケージ用の RepoDB owner は参照しません |
+| `Branch` / `BaseBranch` | `Automatic` | 対象ブランチ / 分岐元。`BaseBranch -> Automatic` はリポジトリの default branch |
+| `CreateBranch` | `Automatic` | 対象ブランチが無いときに作成するか（`Automatic` は `Branch =!= BaseBranch` のとき `True`） |
+| `DeleteMissing` | `False` | `True` でローカルに無いリモートのファイルを削除（事前にプレビューで確認） |
+| `Public` | `False` | 公開リポジトリへのコミットを許可するか |
+| `"ExcludePatterns"` | `{}` | 追加の除外パターン |
+| `Force` | `False` | （`GitHubFolderCommit` のみ）fast-forward 制約を無視 |
+| `Author` / `Committer` | — | （`GitHubFolderCommit` のみ）コミッタ情報 |
+
+`GitHubFolderCreateRepository` は `Repository`, `Public`, `Description`, `Homepage`, `GitignoreTemplate`, `LicenseTemplate`, `"ExcludePatterns"`, `"CommitMessage" -> Automatic` を受け付けます。同名のリポジトリが既にあれば作成は失敗し、既存リポジトリへは何も送りません（既存へ上げるときは `GitHubFolderCommit`）。private を要求したのに作成結果が private でなければ、ファイルを送らずに失敗します。
+
+### 使い方
+
+```mathematica
+(* 1. 差分を確認する（何も変更しない） *)
+GitHubFolderCommitPreview["C:/work/results", Repository -> "results-2026"]
+(* <|"Status" -> "Ready", "Owner" -> ..., "Repository" -> "results-2026", "Private" -> True,
+     "Branch" -> ..., "Added" -> {...}, "Changed" -> {...}, "RemoteOnly" -> {...},
+     "ChangeCount" -> 3, "Changes" -> {...}, "Excluded" -> {...}, "Warnings" -> {...}|> *)
+
+(* 2. 確認後、既存リポジトリへコミットする *)
+GitHubFolderCommit["C:/work/results", "Update results", Repository -> "results-2026"]
+
+(* 新しいリポジトリを作って上げる（既定は private） *)
+GitHubFolderCreateRepository["C:/work/results", Repository -> "results-2026"]
+```
+
+`GitHubFolderCommit` は実行直前にプレビューと同じ差分・可視性の確認をやり直すため、プレビュー後にフォルダや可視性が変わっていても拾えます。変更がなければコミットを作らず `<|"Status" -> "NoChange"|>` を返します。リモートのツリーが大きすぎて一覧が省略された場合は、差分を確定できないため失敗します。リポジトリは作成できたもののファイルのコミットに失敗した場合は、その旨のエラーが返ります。
 
 ## 補足: 並列実行時の注意
 

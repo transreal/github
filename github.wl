@@ -71,7 +71,13 @@ GitHubCommit::usage =
   "GitHubCommit[packageName, message] はローカル GitHub 作業フォルダの内容を\n" <>
   "GitHub の指定ブランチへコミットする。\n" <>
   "複数ファイルを blob/tree/commit/ref 更新の流れでまとめて反映する。\n" <>
-  "BaseBranch -> Automatic のときはリポジトリの default branch を自動使用する。";
+  "BaseBranch -> Automatic のときはリポジトリの default branch を自動使用する。\n" <>
+  "LocalRepoPath が GithubRepositories/<pkg> 以外 (= $packageDirectory のパッケージ以外の\n" <>
+  "フォルダ) を指すときは、既定で private リポジトリにしかコミットしない。\n" <>
+  "公開リポジトリへ送るには Public -> True を明示する。その場合も CodePrivacyLevel > 0 の\n" <>
+  "ファイルがあれば遮断する。外部フォルダでは .git/ や desktop.ini 等を自動で除外し、\n" <>
+  "\"ExcludePatterns\" -> {\"*.log\", \"build/\"} で除外を追加できる。\n" <>
+  "任意のフォルダを上げるときは GitHubFolderCommitPreview / GitHubFolderCommit を使う。";
 
 GitHubCreatePullRequest::usage =
   "GitHubCreatePullRequest[packageName, title] は pull request を作成する。";
@@ -85,6 +91,43 @@ GitHubSubmitPullRequest::usage =
   "GitHubSubmitPullRequest[packageName, title, message] は\n" <>
   "refresh -> branch 作成 -> commit -> pull request 作成を一発で行う。";
 
+GitHubFolderCommitPreview::usage =
+  "GitHubFolderCommitPreview[dir] は $packageDirectory のパッケージ以外の任意のフォルダ dir を\n" <>
+  "GitHub の既存リポジトリへコミットしたときの差分を、実際には何も変更せずに返す。\n" <>
+  "ローカルとリモートの Git blob SHA を比べ、\n" <>
+  "<|\"Status\" -> \"Ready\"|\"NoChange\", \"Owner\", \"Repository\", \"Private\", \"Visibility\",\n" <>
+  "  \"Branch\", \"Added\", \"Changed\", \"RemoteOnly\", \"ChangeCount\", \"Changes\", \"Excluded\", \"Warnings\"|> を返す。\n" <>
+  "既定では private リポジトリしか許可しない (公開なら Failure[\"PublicRepositoryNotAllowed\"])。\n" <>
+  "公開リポジトリを対象にするときは Public -> True を明示する。\n" <>
+  "オプション: Repository -> Automatic (フォルダ名), Owner, Branch, BaseBranch, CreateBranch,\n" <>
+  "DeleteMissing -> False, Public -> False, \"ExcludePatterns\" -> {}。\n" <>
+  ".git/ .svn/ .hg/ desktop.ini Thumbs.db .DS_Store ~$* と同期競合コピーは常に除外する。\n" <>
+  ".gitignore は解釈しないので、除外したいものは \"ExcludePatterns\" (相対パスの前方一致、* 可) で指定する。\n" <>
+  "任意のローカルフォルダを走査して GitHub に問い合わせるため、承認なしの自動実行はしない。\n" <>
+  "例: GitHubFolderCommitPreview[\"C:/work/results\", Repository -> \"results-2026\"]";
+
+GitHubFolderCommit::usage =
+  "GitHubFolderCommit[dir, message] は $packageDirectory のパッケージ以外の任意のフォルダ dir の内容を\n" <>
+  "GitHub の既存リポジトリへコミットする。実行直前に GitHubFolderCommitPreview と同じ差分・可視性の\n" <>
+  "確認をやり直し、変更がなければコミットを作らず <|\"Status\" -> \"NoChange\"|> を返す。\n" <>
+  "既定では private リポジトリにしかコミットしない。公開リポジトリへは Public -> True を明示したときだけ送り、\n" <>
+  "その場合も CodePrivacyLevel > 0 のファイルがあれば Failure[\"PrivateCodeBlocked\"] で止める。\n" <>
+  "オプション: GitHubFolderCommitPreview と同じもの + Force -> False, Author, Committer。\n" <>
+  "DeleteMissing -> True のときはローカルに無いリモートのファイルを削除する (事前にプレビューで確認すること)。\n" <>
+  "外部サービスへの書き込みなので、承認なしの自動実行はしない。\n" <>
+  "例: GitHubFolderCommit[\"C:/work/results\", \"Update results\", Repository -> \"results-2026\"]";
+
+GitHubFolderCreateRepository::usage =
+  "GitHubFolderCreateRepository[dir] は GitHub に新しいリポジトリを作り、任意のフォルダ dir の内容を\n" <>
+  "最初のコミットとして上げる。既定では private リポジトリを作る。\n" <>
+  "公開リポジトリにするときは Public -> True を明示する (作成前に CodePrivacyLevel の関所を通す)。\n" <>
+  "同名のリポジトリが既にあれば作成は失敗し、何も送らない (既存へ上げるときは GitHubFolderCommit)。\n" <>
+  "private を要求したのに作成結果が private でなければ、ファイルを送らずに失敗する。\n" <>
+  "オプション: Repository -> Automatic (フォルダ名), Public -> False, Description, Homepage,\n" <>
+  "GitignoreTemplate, LicenseTemplate, \"ExcludePatterns\" -> {}, \"CommitMessage\" -> Automatic。\n" <>
+  "外部サービスへの書き込みなので、承認なしの自動実行はしない。\n" <>
+  "例: GitHubFolderCreateRepository[\"C:/work/results\", Repository -> \"results-2026\"]";
+
 Owner::usage =
   "Owner は GitHub の所有者 (ユーザー名 / 組織名) を指定するオプション。\n" <>
   "Automatic の場合は認証トークンの所有ユーザーを用いる。";
@@ -95,7 +138,9 @@ Repository::usage =
 
 Public::usage =
   "Public は新規作成する GitHub リポジトリを公開にするかどうか。\n" <>
-  "既定値は False。";
+  "既定値は False。\n" <>
+  "GitHubFolderCommit / GitHubFolderCommitPreview と、LocalRepoPath に外部フォルダを渡した\n" <>
+  "GitHubCommit では「公開リポジトリへのコミットを許可するか」を意味し、True を明示したときだけ許可する。";
 
 Description::usage =
   "Description は新規リポジトリ作成時の description。";
@@ -127,7 +172,9 @@ CreateBranch::usage =
   "Automatic の場合は Branch =!= BaseBranch なら True。";
 
 LocalRepoPath::usage =
-  "LocalRepoPath はローカル GitHub 作業フォルダを明示指定するオプション。";
+  "LocalRepoPath はローカル GitHub 作業フォルダを明示指定するオプション。\n" <>
+  "GithubRepositories/<pkg> 以外のフォルダを指定したときは外部フォルダとして扱い、\n" <>
+  "コミット先は既定で private リポジトリに限る (公開は Public -> True を明示)。";
 
 PackageFile::usage =
   "PackageFile は元の packageName.wl のパスを明示指定するオプション。";
@@ -419,7 +466,12 @@ ClearAll[
   iMirrorBackupPath, iBackupMirror, iRestoreMirror, iDiscardMirrorBackup,
   iWithMirrorRollback, iPruneMirrorBackupRoot, $iMirrorDiscardSuffix,
   iMarkdownRealFrontMatterQ, iMarkdownHeadHazardQ, iNormalizeMarkdownFileHead,
-  iMarkdownUnclosedFenceQ, iSanitizeMirrorMarkdown
+  iMarkdownUnclosedFenceQ, iSanitizeMirrorMarkdown,
+  iPathSegments, iPathStrictlyUnderQ, iPackageMirrorRoot, iExternalFolderQ,
+  iNormalizeFolderPath, iFolderExcludedQ, iExcludedSummaryPath,
+  iFolderCommitFileSet, iRepoPrivateQ, iRepoVisibility, iExternalPublicGuard,
+  iFolderPrivateCodeFiles, iPrivateCodeBlockedFailure, iFolderSuspectSecretPaths,
+  iFolderRepoName, iFolderCheck, iFolderPlan
 ];
 
 iFailure[tag_String, msg_String, data_: <||>] :=
@@ -2151,7 +2203,9 @@ GitHubCreateRepository[packageName_String, opts : OptionsPattern[]] :=
         BaseBranch -> defaultBranch,
         LocalRepoPath -> OptionValue[LocalRepoPath],
         IncludePackageFile -> False,
-        DeleteMissing -> False
+        DeleteMissing -> False,
+        (* 外部 LocalRepoPath の関所用: 公開で作ると明示した場合だけ公開へのコミットを許す *)
+        Public -> (OptionValue[Public] === True)
       ];
       If[FailureQ[commitResult], Return[commitResult]];
     ];
@@ -2320,6 +2374,8 @@ Options[GitHubCommit] = {
   Force -> False,
   Author -> Automatic,
   Committer -> Automatic,
+  Public -> False,
+  "ExcludePatterns" -> {},
   Fallback -> False
 };
 
@@ -2328,7 +2384,7 @@ GitHubCommit[packageName_String, message_String, opts : OptionsPattern[]] :=
           headSHA, commitObj, baseTreeSHA, localFiles, entries = {},  localPaths,
           relPath, ba, blobResp, blobSHA, remoteTree, remotePaths, deletePaths,
           treeResp, newTreeSHA, author, committer,
-          includePackageResult},
+          includePackageResult, externalQ, guard, folderSet = None, privHits},
     (* Fallback オプションを $currentUseFallback に反映 *)
     If[TrueQ[OptionValue[Fallback]],
       ClaudeCode`Private`$currentUseFallback = True];
@@ -2347,10 +2403,31 @@ GitHubCommit[packageName_String, message_String, opts : OptionsPattern[]] :=
     If[FailureQ[baseBranch], Return[baseBranch]];
     branch = iResolveBranch[OptionValue[Branch], baseBranch];
     createBranchQ = Replace[OptionValue[CreateBranch], Automatic :> (branch =!= baseBranch)];
+    (* 外部フォルダ (GithubRepositories/<pkg> 以外) は既定で private リポジトリのみ。
+       フォルダを作る前・パッケージファイルをコピーする前に判定する。 *)
+    externalQ = iExternalFolderQ[iLocalRepoPath[packageName, OptionValue[LocalRepoPath]]];
+    If[externalQ,
+      guard = iExternalPublicGuard[repoInfo["Body"], OptionValue[Public], owner, repo,
+        iLocalRepoPath[packageName, OptionValue[LocalRepoPath]]];
+      If[FailureQ[guard], Return[guard]]
+    ];
     localDir = GitHubEnsureLocalRepo[packageName, LocalRepoPath -> OptionValue[LocalRepoPath]];
     If[TrueQ[OptionValue[IncludePackageFile]],
       includePackageResult = iRefreshPackageGroup[packageName, localDir];
       If[FailureQ[includePackageResult], Return[includePackageResult]];
+    ];
+    (* 外部フォルダは除外を適用した一覧でコミットする。公開を許した場合は
+       非公開コード関所をブランチ作成より前に通す (途中で止めても痕跡を残さない)。 *)
+    If[externalQ,
+      If[!ListQ[OptionValue["ExcludePatterns"]] || !AllTrue[OptionValue["ExcludePatterns"], StringQ],
+        Return[iFailure["InvalidExcludePatterns",
+          "\"ExcludePatterns\" は文字列のリストで指定してください。",
+          <|"Value" -> OptionValue["ExcludePatterns"]|>]]];
+      folderSet = iFolderCommitFileSet[localDir, OptionValue["ExcludePatterns"]];
+      If[!iRepoPrivateQ[repoInfo["Body"]],
+        privHits = iFolderPrivateCodeFiles[folderSet["Files"]];
+        If[privHits =!= {}, Return[iPrivateCodeBlockedFailure[localDir, privHits]]]
+      ]
     ];
     ref = If[TrueQ[createBranchQ],
       iBranchIfMissing[token, owner, repo, branch, baseBranch],
@@ -2372,7 +2449,7 @@ GitHubCommit[packageName_String, message_String, opts : OptionsPattern[]] :=
     If[!StringQ[baseTreeSHA],
       Return[iFailure["MissingBaseTreeSHA", "ベース tree SHA を取得できませんでした。", <|"Branch" -> branch|>]]
     ];
-    localFiles = iListLocalFiles[localDir];
+    localFiles = If[AssociationQ[folderSet], folderSet["Files"], iListLocalFiles[localDir]];
     If[Length[localFiles] == 0,
       Return[iFailure["NoLocalFiles", "ローカル GitHub 作業フォルダにコミット対象ファイルがありません。", <|"LocalRepoPath" -> localDir|>]]
     ];
@@ -2469,6 +2546,8 @@ GitHubCommit[packageName_String, message_String, opts : OptionsPattern[]] :=
         "CommitMessage" -> message,
         "CommitSHA" -> cuResult["CommitSHA"],
         "TreeSHA" -> newTreeSHA,
+        "Private" -> iRepoPrivateQ[repoInfo["Body"]],
+        "ExternalFolder" -> externalQ,
         "UpdatedRef" -> cuResult["UpdateRef"]["Body"]
       |>
     ]
@@ -2548,6 +2627,7 @@ Options[GitHubRefreshAndCommit] = {
   Author -> Automatic,
   Committer -> Automatic,
   ExtraDirectories -> {},
+  Public -> False,
   Fallback -> False
 };
 
@@ -2572,7 +2652,8 @@ GitHubRefreshAndCommit[packageName_String, message_String, opts : OptionsPattern
       DeleteMissing -> OptionValue[DeleteMissing],
       Force -> OptionValue[Force],
       Author -> OptionValue[Author],
-      Committer -> OptionValue[Committer]
+      Committer -> OptionValue[Committer],
+      Public -> OptionValue[Public]
     };
     (* refresh はミラーを先に進めるので、コミット失敗時は巻き戻す *)
     commitResult = iWithMirrorRollback[packageName, localDir,
@@ -2607,6 +2688,7 @@ Options[GitHubSubmitPullRequest] = {
   Body -> "",
   Draft -> False,
   MaintainerCanModify -> True,
+  Public -> False,
   Fallback -> False
 };
 
@@ -2630,7 +2712,8 @@ GitHubSubmitPullRequest[packageName_String, title_String, message_String, opts :
       DeleteMissing -> OptionValue[DeleteMissing],
       Force -> OptionValue[Force],
       Author -> OptionValue[Author],
-      Committer -> OptionValue[Committer]
+      Committer -> OptionValue[Committer],
+      Public -> OptionValue[Public]
     };
     (* refresh はミラーを先に進めるので、コミット失敗時は巻き戻す *)
     commitResult = iWithMirrorRollback[packageName, localDir,
@@ -2662,6 +2745,496 @@ GitHubSubmitPullRequest[packageName_String, title_String, message_String, opts :
       "RefreshResult" -> refreshResult,
       "Commit" -> commitResult,
       "PullRequest" -> prResult
+    |>
+  ];
+
+
+(* ============================================================
+   外部フォルダのコミット (2026-09-30)
+
+   github.wl は $packageDirectory のパッケージ (manifest -> GithubRepositories/<pkg>
+   ミラー) を前提にしているが、論文の計算結果フォルダなど任意のフォルダを
+   GitHub に上げたい場面がある。これまでは LocalRepoPath で外部フォルダを指し
+   IncludePackageFile -> False で GitHubCommit を呼ぶ抜け道と、Private`
+   ヘルパーを組み立てた差分関数をノートブックに書いて済ませていた。
+
+   方針:
+   - パッケージ管理下 = GithubRepositories/<pkg> 配下だけ。それ以外
+     ($packageDirectory 直下やその他のサブフォルダを含む) は外部フォルダ。
+   - 外部フォルダは既定で private リポジトリにしかコミットしない。
+     公開リポジトリへは Public -> True を明示したときだけ (True 以外は不許可)。
+     可視性を読み取れない応答も private と見なさない (fail-closed)。
+   - 公開を許した場合も CodePrivacyLevel > 0 のファイルは遮断する
+     (manifest 経路の iPrivateCodeViolations と同じ関所)。
+   - 関所は GitHubCommit 本体に置く。GitHubFolder* はその上の層なので、
+     LocalRepoPath を直接渡す従来の呼び方でも同じ判定を通る。
+   - GitHubFolder* はいずれも承認対象 (trusted head に登録しない)。読むだけの
+     GitHubFolderCommitPreview も、任意のローカルフォルダを走査して GitHub に
+     問い合わせるので同じ扱い。末尾の NBRegisterTrustedPackageHeads 参照。
+   ============================================================ *)
+
+(* パス比較用: 絶対化 (.. も解決) して区切りで分解する。Windows は大小無視。 *)
+iPathSegments[path_String] :=
+  Module[{abs},
+    abs = Quiet @ Check[ExpandFileName[path], $Failed];
+    If[!StringQ[abs] || abs === "", Return[{}]];
+    Map[If[$OperatingSystem === "Windows", ToLowerCase[#], #] &,
+      DeleteCases[FileNameSplit[abs], ""]]
+  ];
+iPathSegments[_] := {};
+
+(* path が root の真に下にあるか (root 自身は含まない) *)
+iPathStrictlyUnderQ[path_String, root_String] :=
+  Module[{p = iPathSegments[path], r = iPathSegments[root]},
+    Length[r] > 0 && Length[p] > Length[r] && Take[p, Length[r]] === r
+  ];
+iPathStrictlyUnderQ[___] := False;
+
+(* パッケージのミラー置き場。$packageDirectory が分からなければ None
+   (そのときはすべて外部フォルダ扱い = fail-closed) *)
+iPackageMirrorRoot[] :=
+  Module[{pkg = iPackageDirectory[]},
+    If[StringQ[pkg] && StringLength[pkg] > 0 && DirectoryQ[pkg],
+      FileNameJoin[{pkg, "GithubRepositories"}],
+      None]
+  ];
+
+iExternalFolderQ[dir_String] :=
+  Module[{root = iPackageMirrorRoot[]},
+    ! (StringQ[root] && iPathStrictlyUnderQ[dir, root])
+  ];
+iExternalFolderQ[_] := True;
+
+(* 絶対パス・末尾区切りなしに揃える (iRelativeGitPath の段数計算を安定させる) *)
+iNormalizeFolderPath[dir_String] :=
+  Module[{abs = Quiet @ Check[ExpandFileName[dir], $Failed]},
+    If[StringQ[abs] && abs =!= "", FileNameJoin[FileNameSplit[abs]], dir]
+  ];
+
+(* 外部フォルダの既定除外: VCS の管理領域、OS・同期ツールの付帯ファイル、
+   同期競合コピー、Office のロックファイル。.gitignore は解釈しない
+   (必要なものは "ExcludePatterns" で足す)。名前の比較は大小無視。 *)
+$iFolderExcludedDirNames = {".git", ".svn", ".hg", ".dropbox.cache"};
+$iFolderExcludedFileNames = {"desktop.ini", "thumbs.db", ".ds_store", ".dropbox", ".dropbox.attr"};
+
+iFolderExcludedQ[rel_String, patterns_List] :=
+  Module[{segs = StringSplit[rel, "/"], name},
+    If[segs === {}, Return[True]];
+    name = Last[segs];
+    TrueQ @ Or[
+      AnyTrue[Most[segs], MemberQ[$iFolderExcludedDirNames, ToLowerCase[#]] &],
+      MemberQ[$iFolderExcludedFileNames, ToLowerCase[name]],
+      StringStartsQ[name, "~$"],
+      iConflictedCopyFileQ[name],
+      (* 空文字列は前方一致で全部に当たるので捨てる *)
+      iMatchExcludePattern[rel, Select[patterns, StringQ[#] && # =!= "" &]]
+    ]
+  ];
+
+(* 除外一覧の表示用: .git/ 等の中身は 1 行にまとめる *)
+iExcludedSummaryPath[rel_String] :=
+  Module[{segs = StringSplit[rel, "/"], pos},
+    If[Length[segs] < 2, Return[rel]];
+    pos = FirstPosition[Most[segs],
+      s_String /; MemberQ[$iFolderExcludedDirNames, ToLowerCase[s]], None, {1}];
+    If[pos === None, rel, StringRiffle[Take[segs, First[pos]], "/"] <> "/"]
+  ];
+
+(* 外部フォルダのコミット対象 (除外適用後) *)
+iFolderCommitFileSet[dir_String, patterns_List] :=
+  Module[{rows, keep, drop},
+    rows = {#, iRelativeGitPath[dir, #]} & /@ iListLocalFiles[dir];
+    keep = Select[rows, ! iFolderExcludedQ[#[[2]], patterns] &];
+    drop = Select[rows, iFolderExcludedQ[#[[2]], patterns] &];
+    <|"Files" -> keep[[All, 1]], "Paths" -> keep[[All, 2]],
+      "Excluded" -> Sort[drop[[All, 2]]]|>
+  ];
+
+(* private と見なすのは private フラグが True で visibility が public でないときだけ。
+   キー欠落などで判定できない応答は private と見なさない (fail-closed)。 *)
+iRepoPrivateQ[body_Association] :=
+  TrueQ[Lookup[body, "private", False]] &&
+  Lookup[body, "visibility", "private"] =!= "public";
+iRepoPrivateQ[_] := False;
+
+iRepoVisibility[body_Association] :=
+  Replace[Lookup[body, "visibility", Missing["NotAvailable"]],
+    Except[_String] :> If[TrueQ[Lookup[body, "private", False]], "private", "unknown"]];
+iRepoVisibility[_] := "unknown";
+
+(* 外部フォルダの可視性関所。通過なら None、不許可なら Failure。
+   allowPublic は True そのものだけを許可とみなす。 *)
+iExternalPublicGuard[body_, allowPublic_, owner_String, repo_String, dir_String] :=
+  If[iRepoPrivateQ[body] || allowPublic === True,
+    None,
+    iFailure["PublicRepositoryNotAllowed",
+      "$packageDirectory のパッケージ以外のフォルダは、既定では private リポジトリにしかコミットできません。" <>
+      "公開リポジトリへ送る場合は Public -> True を明示してください。",
+      <|"Repository" -> owner <> "/" <> repo,
+        "Visibility" -> iRepoVisibility[body],
+        "Folder" -> dir,
+        "RepositoryURL" -> iRepositoryURL[owner, repo]|>]
+  ];
+
+(* 公開リポジトリへ送るときの非公開コード関所 (manifest 経路と同じ拡張子) *)
+iFolderPrivateCodeFiles[files_List] :=
+  Select[files,
+    MemberQ[{"wl", "m", "wls", "md", "txt"}, ToLowerCase[FileExtension[#]]] &&
+      iCodePrivacyLevel[#] > 0 &];
+
+iPrivateCodeBlockedFailure[dir_String, hits_List] :=
+  iFailure["PrivateCodeBlocked",
+    "CodePrivacyLevel > 0 の非公開ファイルがあるため、公開リポジトリへはコミットできません。" <>
+    "該当ファイルを \"ExcludePatterns\" で外すか、private リポジトリを使ってください。",
+    <|"Folder" -> dir, "Files" -> (iRelativeGitPath[dir, #] & /@ hits)|>];
+
+(* 秘密情報らしい名前 (警告のみ。名前だけの推定なので止めはしない) *)
+$iFolderSecretNameHints = {"secret", "token", "credential", "password", "passwd",
+  "id_rsa", "id_ed25519", ".env", ".pem", ".key", ".pfx", ".p12", ".keystore"};
+
+iFolderSuspectSecretPaths[paths_List] :=
+  Select[paths,
+    Function[p, With[{n = ToLowerCase[Last[StringSplit[p, "/"], p]]},
+      AnyTrue[$iFolderSecretNameHints, StringContainsQ[n, #] &]]]];
+
+(* リポジトリ名: Automatic はフォルダ名。GitHub が受け付ける文字だけ通す。 *)
+iFolderRepoName[dir_String, Automatic] := iFolderRepoName[dir, FileNameTake[dir]];
+iFolderRepoName[_String, name_String] :=
+  If[StringMatchQ[name, RegularExpression["[A-Za-z0-9._-]{1,100}"]] &&
+      !MemberQ[{".", ".."}, name],
+    name,
+    iFailure["InvalidRepositoryName",
+      "リポジトリ名に使えない文字が含まれています (英数字と . _ - のみ、100 文字まで)。" <>
+      "Repository -> \"name\" で指定してください。",
+      <|"Name" -> name|>]];
+iFolderRepoName[_, other_] :=
+  iFailure["InvalidRepositoryName", "Repository は文字列か Automatic で指定してください。",
+    <|"Name" -> other|>];
+
+(* ネットワークに触れる前の共通検査: フォルダ・リポジトリ名・除外指定・対象ファイル *)
+iFolderCheck[dir_, repoOpt_, patterns_] :=
+  Module[{abs, repo, set},
+    If[!StringQ[dir] || !DirectoryQ[dir],
+      Return[iFailure["MissingDirectory", "指定したフォルダがありません。", <|"Folder" -> dir|>]]];
+    abs = iNormalizeFolderPath[dir];
+    (* パッケージのミラーはこの経路で上げない (manifest・docs ゲートを素通りしてしまう) *)
+    If[!iExternalFolderQ[abs],
+      Return[iFailure["PackageMirrorFolder",
+        "GithubRepositories 配下はパッケージのミラーです。PackageCommit / GitHubRefreshAndCommit を使ってください。",
+        <|"Folder" -> abs|>]]];
+    repo = iFolderRepoName[abs, repoOpt];
+    If[FailureQ[repo], Return[repo]];
+    If[!ListQ[patterns] || !AllTrue[patterns, StringQ],
+      Return[iFailure["InvalidExcludePatterns",
+        "\"ExcludePatterns\" は文字列のリストで指定してください。", <|"Value" -> patterns|>]]];
+    set = iFolderCommitFileSet[abs, patterns];
+    If[set["Files"] === {},
+      Return[iFailure["NoLocalFiles", "除外後にコミット対象のファイルが残りません。",
+        <|"Folder" -> abs, "Excluded" -> DeleteDuplicates[iExcludedSummaryPath /@ set["Excluded"]]|>]]];
+    <|"Folder" -> abs, "Repository" -> repo, "FileSet" -> set|>
+  ];
+
+(* 差分計画 (読み取り専用)。GitHubFolderCommitPreview の本体で、
+   GitHubFolderCommit もコミット直前にこれをやり直す。 *)
+iFolderPlan[dir_, o_Association] :=
+  Module[{chk, abs, repo, set, deleteMissing, allowPublic, token, owner, info, body,
+          guard, privateQ, baseBranch, branch, createQ, ref, willCreate = False,
+          headSHA, commitObj, treeSHA, tree, remoteSHAs, hashRules, localSHAs,
+          added, changed, removed, count, privHits, secretHits},
+    deleteMissing = o["DeleteMissing"];
+    If[!BooleanQ[deleteMissing],
+      Return[iFailure["InvalidDeleteMissing", "DeleteMissing は True か False で指定してください。",
+        <|"Value" -> deleteMissing|>]]];
+    allowPublic = (o["Public"] === True);
+    chk = iFolderCheck[dir, o["Repository"], o["ExcludePatterns"]];
+    If[FailureQ[chk], Return[chk]];
+    abs = chk["Folder"]; repo = chk["Repository"]; set = chk["FileSet"];
+    token = iAccessToken[];
+    If[FailureQ[token], Return[token]];
+    (* 2 引数版: パッケージ用の RepoDB owner は参照しない *)
+    owner = iResolveOwner[token, o["Owner"]];
+    If[FailureQ[owner], Return[owner]];
+    If[!StringQ[owner] || owner === "",
+      Return[iFailure["InvalidOwner", "Owner は文字列か Automatic で指定してください。",
+        <|"Owner" -> o["Owner"]|>]]];
+    info = iGetRepoInfo[token, owner, repo];
+    If[FailureQ[info],
+      Return[If[iStatusCode[info] === 404,
+        iFailure["RepositoryNotFound",
+          "リポジトリが見つかりません (またはトークンから見えません)。新規作成は GitHubFolderCreateRepository を使ってください。",
+          <|"Repository" -> owner <> "/" <> repo, "Folder" -> abs|>],
+        info]]];
+    body = info["Body"];
+    guard = iExternalPublicGuard[body, allowPublic, owner, repo, abs];
+    If[FailureQ[guard], Return[guard]];
+    privateQ = iRepoPrivateQ[body];
+    baseBranch = Replace[o["BaseBranch"],
+      Automatic :> Lookup[body, "default_branch", Missing["NotAvailable"]]];
+    If[!StringQ[baseBranch] || baseBranch === "",
+      Return[iFailure["MissingDefaultBranch", "リポジトリの default_branch を取得できませんでした。",
+        <|"Repository" -> owner <> "/" <> repo|>]]];
+    branch = Replace[o["Branch"], Automatic -> baseBranch];
+    If[!StringQ[branch] || branch === "",
+      Return[iFailure["InvalidBranch", "Branch は文字列か Automatic で指定してください。",
+        <|"Branch" -> branch|>]]];
+    createQ = Replace[o["CreateBranch"], Automatic :> (branch =!= baseBranch)];
+    ref = iGetRef[token, owner, repo, branch];
+    (* 対象ブランチが無く、作成が許されていれば分岐元と比べる *)
+    If[FailureQ[ref] && iStatusCode[ref] === 404 && TrueQ[createQ] && branch =!= baseBranch,
+      ref = iGetRef[token, owner, repo, baseBranch];
+      willCreate = True];
+    If[FailureQ[ref],
+      Return[If[iStatusCode[ref] === 404,
+        iBranchReadFailure[owner, repo, If[willCreate, baseBranch, branch]],
+        ref]]];
+    headSHA = Lookup[Lookup[ref["Body"], "object", <||>], "sha", Missing["NotAvailable"]];
+    If[!StringQ[headSHA],
+      Return[iFailure["MissingHeadSHA", "ブランチ先頭 commit の SHA を取得できませんでした。",
+        <|"Branch" -> branch|>]]];
+    commitObj = iGetCommitObject[token, owner, repo, headSHA];
+    If[FailureQ[commitObj], Return[commitObj]];
+    treeSHA = Lookup[Lookup[commitObj["Body"], "tree", <||>], "sha", Missing["NotAvailable"]];
+    If[!StringQ[treeSHA],
+      Return[iFailure["MissingBaseTreeSHA", "ベース tree SHA を取得できませんでした。",
+        <|"Branch" -> branch|>]]];
+    tree = iGetTreeRecursive[token, owner, repo, treeSHA];
+    If[FailureQ[tree], Return[tree]];
+    If[TrueQ[Lookup[tree["Body"], "truncated", False]],
+      Return[iFailure["TruncatedTree",
+        "リモートのツリーが大きすぎて一覧が省略されたため、差分を確定できません。",
+        <|"Repository" -> owner <> "/" <> repo, "Branch" -> branch|>]]];
+    remoteSHAs = Association @ Cases[Lookup[tree["Body"], "tree", {}],
+      a_Association /; Lookup[a, "type", None] === "blob" :>
+        (Lookup[a, "path", ""] -> Lookup[a, "sha", ""])];
+    hashRules = Catch[
+      MapThread[
+        Function[{file, rel}, Module[{ba = iReadLocalByteArray[file]},
+          If[FailureQ[ba], Throw[ba, "iFolderRead"]];
+          rel -> iGitBlobSHA[ba]]],
+        {set["Files"], set["Paths"]}],
+      "iFolderRead"];
+    If[FailureQ[hashRules], Return[hashRules]];
+    localSHAs = Association[hashRules];
+    added = Sort @ Complement[Keys[localSHAs], Keys[remoteSHAs]];
+    changed = Sort @ Select[Intersection[Keys[localSHAs], Keys[remoteSHAs]],
+      localSHAs[#] =!= remoteSHAs[#] &];
+    removed = Sort @ Complement[Keys[remoteSHAs], Keys[localSHAs]];
+    count = Length[added] + Length[changed] + If[deleteMissing, Length[removed], 0];
+    If[!privateQ,
+      privHits = iFolderPrivateCodeFiles[set["Files"]];
+      If[privHits =!= {}, Return[iPrivateCodeBlockedFailure[abs, privHits]]]];
+    secretHits = iFolderSuspectSecretPaths[set["Paths"]];
+    <|
+      "Status" -> If[count == 0 && !willCreate, "NoChange", "Ready"],
+      "Folder" -> abs,
+      "Owner" -> owner,
+      "Repository" -> repo,
+      "RepositoryURL" -> iRepositoryURL[owner, repo],
+      "Private" -> privateQ,
+      "Visibility" -> iRepoVisibility[body],
+      "Branch" -> branch,
+      "BaseBranch" -> baseBranch,
+      "CreateBranch" -> willCreate,
+      "HeadSHA" -> headSHA,
+      "LocalFileCount" -> Length[set["Files"]],
+      "Added" -> added,
+      "Changed" -> changed,
+      "RemoteOnly" -> removed,
+      "DeleteMissing" -> deleteMissing,
+      "ChangeCount" -> count,
+      "Changes" -> Join[
+        <|"Change" -> "Added", "Path" -> #|> & /@ added,
+        <|"Change" -> "Changed", "Path" -> #|> & /@ changed,
+        <|"Change" -> If[deleteMissing, "Deleted", "KeptOnRemote"], "Path" -> #|> & /@ removed],
+      "Excluded" -> DeleteDuplicates[iExcludedSummaryPath /@ set["Excluded"]],
+      "ExcludePatterns" -> o["ExcludePatterns"],
+      "Warnings" -> If[secretHits === {}, {},
+        {<|"Issue" -> "SuspectSecretFiles", "Paths" -> secretHits,
+           "Hint" -> "秘密情報らしい名前のファイルです。不要なら \"ExcludePatterns\" で外してください。"|>}]
+    |>
+  ];
+
+Options[GitHubFolderCommitPreview] = {
+  Owner -> Automatic,
+  Repository -> Automatic,
+  Branch -> Automatic,
+  BaseBranch -> Automatic,
+  CreateBranch -> Automatic,
+  DeleteMissing -> False,
+  Public -> False,
+  "ExcludePatterns" -> {}
+};
+
+GitHubFolderCommitPreview[dir_String, opts : OptionsPattern[]] :=
+  iFolderPlan[dir, <|
+    "Owner" -> OptionValue[Owner],
+    "Repository" -> OptionValue[Repository],
+    "Branch" -> OptionValue[Branch],
+    "BaseBranch" -> OptionValue[BaseBranch],
+    "CreateBranch" -> OptionValue[CreateBranch],
+    "DeleteMissing" -> OptionValue[DeleteMissing],
+    "Public" -> OptionValue[Public],
+    "ExcludePatterns" -> OptionValue["ExcludePatterns"]
+  |>];
+
+Options[GitHubFolderCommit] = {
+  Owner -> Automatic,
+  Repository -> Automatic,
+  Branch -> Automatic,
+  BaseBranch -> Automatic,
+  CreateBranch -> Automatic,
+  DeleteMissing -> False,
+  Force -> False,
+  Public -> False,
+  Author -> Automatic,
+  Committer -> Automatic,
+  "ExcludePatterns" -> {}
+};
+
+GitHubFolderCommit[dir_String, message_String, opts : OptionsPattern[]] :=
+  Module[{plan, result},
+    If[StringTrim[message] === "",
+      Return[iFailure["EmptyCommitMessage", "コミットメッセージが空です。", <|"Folder" -> dir|>]]];
+    (* プレビュー後にフォルダや可視性が変わっていても拾えるよう、直前にやり直す *)
+    plan = iFolderPlan[dir, <|
+      "Owner" -> OptionValue[Owner],
+      "Repository" -> OptionValue[Repository],
+      "Branch" -> OptionValue[Branch],
+      "BaseBranch" -> OptionValue[BaseBranch],
+      "CreateBranch" -> OptionValue[CreateBranch],
+      "DeleteMissing" -> OptionValue[DeleteMissing],
+      "Public" -> OptionValue[Public],
+      "ExcludePatterns" -> OptionValue["ExcludePatterns"]
+    |>];
+    If[FailureQ[plan], Return[plan]];
+    If[plan["Status"] === "NoChange",
+      Return[<|
+        "Status" -> "NoChange",
+        "Folder" -> plan["Folder"],
+        "Owner" -> plan["Owner"],
+        "Repository" -> plan["Repository"],
+        "Branch" -> plan["Branch"],
+        "Private" -> plan["Private"],
+        "Message" -> "反映する変更はありません。"
+      |>]];
+    (* 可視性・非公開コードの関所は GitHubCommit 側でももう一度通る *)
+    result = GitHubCommit[plan["Repository"], message,
+      Owner -> plan["Owner"],
+      Repository -> plan["Repository"],
+      Branch -> plan["Branch"],
+      BaseBranch -> plan["BaseBranch"],
+      CreateBranch -> OptionValue[CreateBranch],
+      LocalRepoPath -> plan["Folder"],
+      IncludePackageFile -> False,
+      DeleteMissing -> plan["DeleteMissing"],
+      Force -> TrueQ[OptionValue[Force]],
+      Author -> OptionValue[Author],
+      Committer -> OptionValue[Committer],
+      Public -> (OptionValue[Public] === True),
+      "ExcludePatterns" -> OptionValue["ExcludePatterns"]];
+    If[FailureQ[result], Return[result]];
+    Join[result, <|
+      "Status" -> "Committed",
+      "Folder" -> plan["Folder"],
+      "Visibility" -> plan["Visibility"],
+      "ChangeCount" -> plan["ChangeCount"],
+      "Added" -> plan["Added"],
+      "Changed" -> plan["Changed"],
+      "Deleted" -> If[TrueQ[plan["DeleteMissing"]], plan["RemoteOnly"], {}],
+      "CommitURL" -> iRepositoryURL[plan["Owner"], plan["Repository"]] <>
+        "/commit/" <> ToString[result["CommitSHA"]]
+    |>]
+  ];
+
+Options[GitHubFolderCreateRepository] = {
+  Repository -> Automatic,
+  Public -> False,
+  Description -> "",
+  Homepage -> None,
+  GitignoreTemplate -> None,
+  LicenseTemplate -> None,
+  "ExcludePatterns" -> {},
+  "CommitMessage" -> Automatic
+};
+
+GitHubFolderCreateRepository[dir_String, opts : OptionsPattern[]] :=
+  Module[{public, chk, abs, repo, privHits, msg, token, resp, body, owner, info,
+          defaultBranch, ref, commit},
+    public = (OptionValue[Public] === True);
+    chk = iFolderCheck[dir, OptionValue[Repository], OptionValue["ExcludePatterns"]];
+    If[FailureQ[chk], Return[chk]];
+    abs = chk["Folder"]; repo = chk["Repository"];
+    (* 公開で作るなら、作る前に非公開コード関所を通す
+       (作ってから止まると空の公開リポジトリが残る) *)
+    If[public,
+      privHits = iFolderPrivateCodeFiles[chk["FileSet"]["Files"]];
+      If[privHits =!= {}, Return[iPrivateCodeBlockedFailure[abs, privHits]]]];
+    msg = Replace[OptionValue["CommitMessage"], {
+      s_String /; StringTrim[s] =!= "" :> s,
+      _ -> "Initial upload via GitHubFolderCreateRepository"}];
+    token = iAccessToken[];
+    If[FailureQ[token], Return[token]];
+    (* auto_init で初期コミットを作る (空リポジトリには blob/tree API で積めないため) *)
+    resp = iAPICall["POST", "user/repos", token,
+      iCompactAssociation @ <|
+        "name" -> repo,
+        "description" -> OptionValue[Description],
+        "homepage" -> OptionValue[Homepage],
+        "private" -> !public,
+        "auto_init" -> True,
+        "gitignore_template" -> OptionValue[GitignoreTemplate],
+        "license_template" -> OptionValue[LicenseTemplate]
+      |>];
+    (* 同名が既にあれば 422。既存リポジトリへは何も送らない *)
+    If[FailureQ[resp], Return[resp]];
+    body = resp["Body"];
+    owner = Lookup[Lookup[body, "owner", <||>], "login", Missing["NotAvailable"]];
+    If[!StringQ[owner] || owner === "",
+      Return[iFailure["OwnerResolutionFailed", "作成したリポジトリの owner を取得できませんでした。",
+        <|"Response" -> body|>]]];
+    (* 作られた可視性が要求どおりか確かめる。private を頼んで private でなければ送らない *)
+    If[!public && !iRepoPrivateQ[body],
+      Return[iFailure["VisibilityMismatch",
+        "private での作成を要求しましたが、作成されたリポジトリは private ではありません。" <>
+        "ファイルは送信していません。GitHub で可視性を確認してください。",
+        <|"Repository" -> owner <> "/" <> repo, "Visibility" -> iRepoVisibility[body],
+          "RepositoryURL" -> iRepositoryURL[owner, repo]|>]]];
+    info = iWaitForRepoInfo[token, owner, repo];
+    If[FailureQ[info], Return[iRepoAccessFailure[owner, repo, iStatusCode[info]]]];
+    defaultBranch = Lookup[info["Body"], "default_branch", Missing["NotAvailable"]];
+    If[!StringQ[defaultBranch] || defaultBranch === "",
+      Return[iFailure["MissingDefaultBranch", "リポジトリの default_branch を取得できませんでした。",
+        <|"Repository" -> owner <> "/" <> repo|>]]];
+    ref = iWaitForRef[token, owner, repo, defaultBranch];
+    If[FailureQ[ref], Return[iBranchReadFailure[owner, repo, defaultBranch]]];
+    commit = GitHubFolderCommit[abs, msg,
+      Owner -> owner,
+      Repository -> repo,
+      Branch -> defaultBranch,
+      BaseBranch -> defaultBranch,
+      CreateBranch -> False,
+      DeleteMissing -> False,
+      Public -> public,
+      "ExcludePatterns" -> OptionValue["ExcludePatterns"]];
+    If[FailureQ[commit],
+      Return[iFailure["InitialCommitFailed",
+        "リポジトリは作成しましたが、ファイルのコミットに失敗しました。" <>
+        "原因を解消してから GitHubFolderCommit で再実行してください。",
+        <|"Repository" -> owner <> "/" <> repo,
+          "RepositoryURL" -> iRepositoryURL[owner, repo],
+          "Private" -> iRepoPrivateQ[info["Body"]],
+          "Cause" -> commit|>]]];
+    <|
+      "Status" -> "Created",
+      "Folder" -> abs,
+      "Owner" -> owner,
+      "Repository" -> repo,
+      "RepositoryURL" -> iRepositoryURL[owner, repo],
+      "Private" -> iRepoPrivateQ[info["Body"]],
+      "Visibility" -> iRepoVisibility[info["Body"]],
+      "DefaultBranch" -> defaultBranch,
+      "Commit" -> commit,
+      "Response" -> info["Body"]
     |>
   ];
 
@@ -5017,6 +5590,13 @@ If[Length[Names["NBAccess`$NBTrustedPackageHeads"]] > 0,
 
          書き込み系 (PackageCommit / GitHubRefreshAndCommit) は承認対象のまま。
          PackageCommit は DryRun 既定でも実コミットに至る経路を持つため入れない。 *)
+      (* 2026-09-30: 外部フォルダ用の GitHubFolderCommitPreview / GitHubFolderCommit /
+         GitHubFolderCreateRepository は意図的にここへ入れない (オーナー指示:
+         「自動実行されない確認のいる関数」)。Preview は読み取りだけだが、任意の
+         ローカルフォルダを走査して GitHub へ問い合わせるので承認対象に揃える。
+         $NBApprovalHeads にも入れないこと: あちらは CommitterAutoApprove で
+         自動承認され得る notebook 書き込み系の集合で、未登録 head のままの方が
+         必ず承認 UI を通る。"GitHub*" のようなワイルドカードで信頼しないこと。 *)
       {"GitHubCommitLog", "GitHubListCommits", "GitHubServiceStatus",
        "GitHubListIssues", "GitHubIssueGet", "GitHubIssueComments",
        "GitHubIssueAuthorProfile", "GitHubManagedRepositories",

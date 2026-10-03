@@ -2,9 +2,11 @@
 
 NBAccess.wl と claudecode.wl と連携する GitHub REST ヘルパー。認証は `NBAccess`NBGetAPIKey["github"]` に委譲。パッケージ名でリモートリポジトリを操作する。多くの関数は第1引数に packageName_String を取り、`$packageDirectory` 内の `.wl`/Paclet を対象とする。日本語パッケージ名は repo_database.json 経由で英語リポジトリ名に解決される。失敗時は `$Failed` または `Failure[...]` を返す。
 
-共通オプション解決規則: `Owner -> Automatic` は認証トークンの所有ユーザー、`Repository -> Automatic` は packageName(RepoDB 解決後)、`BaseBranch -> Automatic` はリポジトリの default branch、`Branch -> Automatic` は BaseBranch。`Fallback -> True` で Claude Code エラー時のフォールバック(リポジトリ名翻訳など)を許可。ほぼ全公開関数に `Fallback -> False` オプションがある。
+共通オプション解決規則: `Owner -> Automatic` は認証トークンの所有ユーザー、`Repository -> Automatic` は packageName(RepoDB 解決後。GitHubFolder* ではフォルダ名)、`BaseBranch -> Automatic` はリポジトリの default branch、`Branch -> Automatic` は BaseBranch。`Fallback -> True` で Claude Code エラー時のフォールバック(リポジトリ名翻訳など)を許可。ほぼ全公開関数に `Fallback -> False` オプションがある。
 
-非公開コード関所: ファイル先頭付近(4096バイト以内)の機械可読マーカー `(* :CodePrivacyLevel: 0.1 *)`(.md は `<!-- :CodePrivacyLevel: x -->`)で「ソースコード自体が非公開」を宣言できる(0 または無印 = 公開可)。manifest 対象(files + directories 配下の .wl/.m/.wls/.md/.txt)に CodePrivacyLevel > 0 のファイルが含まれると、GitHubRefreshLocalPackageGroup / GitHubRefreshAndCommit / GitHubCreateRepository の内部リフレッシュ処理は何もコピーせず `Failure["PrivateCodeBlocked", ...]` を返し fail-closed で遮断する(部分反映を作らない)。GitHubValidateManifest でも同じ違反を事前検出できる。
+非公開コード関所: ファイル先頭付近(4096バイト以内)の機械可読マーカー `(* :CodePrivacyLevel: 0.1 *)`(.md は `<!-- :CodePrivacyLevel: x -->`)で「ソースコード自体が非公開」を宣言できる(0 または無印 = 公開可)。manifest 対象(files + directories 配下の .wl/.m/.wls/.md/.txt)に CodePrivacyLevel > 0 のファイルが含まれると、GitHubRefreshLocalPackageGroup / GitHubRefreshAndCommit / GitHubCreateRepository の内部リフレッシュ処理は何もコピーせず `Failure["PrivateCodeBlocked", ...]` を返し fail-closed で遮断する(部分反映を作らない)。GitHubValidateManifest でも同じ違反を事前検出できる。外部フォルダ経路(GitHubCommit の外部 LocalRepoPath / GitHubFolder*)でも、公開を許した場合は同じ関所を通る。
+
+外部フォルダ規則: `GithubRepositories/<pkg>` 配下以外の LocalRepoPath/dir(`$packageDirectory` 直下やその他のサブフォルダ含む)は「外部フォルダ」。外部フォルダのコミットは既定で private リポジトリにのみ許可。公開リポジトリへは `Public -> True` を明示したときだけ(True 以外は不許可、可視性が読めない応答も private と見なさず fail-closed)。関所は GitHubCommit 本体にあるため、LocalRepoPath を直接渡す呼び方でも同じ判定を通る。外部フォルダでは `.git/ .svn/ .hg/ desktop.ini Thumbs.db .DS_Store ~$*` と同期競合コピーを常に除外。`.gitignore` は解釈しない(`"ExcludePatterns"` で指定)。
 
 Markdown 先頭 `---` ガード: ミラーリフレッシュ時、すべての `.md` ファイルに対し先頭の独立した `---` 行(YAML front matter でないもの)を自動除去する。GitHub はこれを front matter としてパースし本文全体が消えるため。閉じ `---` と `key: value` 行を持つ本物の front matter(Claude Directives の rules/*.md / SKILL.md など)はそのまま通過する。
 
@@ -28,7 +30,7 @@ Options: Owner -> Automatic, Repository -> Automatic, Fallback -> False
 ### GitHubEnsureLocalRepo[packageName, opts]
 ローカル作業フォルダを作成して返す
 → String(ディレクトリパス)
-Options: LocalRepoPath -> Automatic (保存先を明示指定)
+Options: LocalRepoPath -> Automatic (保存先を明示指定。GithubRepositories/<pkg> 以外は外部フォルダ扱い)
 
 ### GitHubRefreshLocalPackage[packageName, opts]
 `<pkg>.wl` をローカル作業フォルダへコピー(後方互換・単一ファイル用)。グループには GitHubRefreshLocalPackageGroup を使う
@@ -74,9 +76,9 @@ Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseB
 Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, LocalRepoPath -> Automatic, Clean -> False (取得前に既存ローカルファイルを削除), Fallback -> False
 
 ### GitHubCommit[packageName, message, opts]
-ローカル作業フォルダの内容を blob/tree/commit/ref 更新で GitHub の指定ブランチへまとめてコミット
+ローカル作業フォルダの内容を blob/tree/commit/ref 更新で GitHub の指定ブランチへまとめてコミット。LocalRepoPath が外部フォルダを指す場合は既定で private リポジトリにしかコミットしない(公開へは Public -> True を明示、その場合も CodePrivacyLevel > 0 のファイルがあれば遮断)。外部フォルダでは `.git/` や desktop.ini 等を自動除外し `"ExcludePatterns" -> {"*.log", "build/"}` で追加除外可。任意フォルダには GitHubFolderCommitPreview / GitHubFolderCommit を使う
 → Association | Failure
-Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, CreateBranch -> Automatic (Automatic は Branch =!= BaseBranch なら True), LocalRepoPath -> Automatic, IncludePackageFile -> True, PackageFile -> Automatic, DeleteMissing -> False (ローカルに無いリモート blob を tree から削除), Force -> False (ref 更新で fast-forward 制約を無視), Author -> Automatic (`<|"name"->..,"email"->..|>`), Committer -> Automatic, Fallback -> False
+Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, CreateBranch -> Automatic (Automatic は Branch =!= BaseBranch なら True), LocalRepoPath -> Automatic, IncludePackageFile -> True, PackageFile -> Automatic, DeleteMissing -> False (ローカルに無いリモート blob を tree から削除), Force -> False (ref 更新で fast-forward 制約を無視), Author -> Automatic (`<|"name"->..,"email"->..|>`), Committer -> Automatic, Public -> False (外部フォルダで公開リポジトリへのコミットを許可), "ExcludePatterns" -> {} (外部フォルダの追加除外), Fallback -> False
 
 ### GitHubCreatePullRequest[packageName, title, opts]
 pull request を作成
@@ -92,6 +94,27 @@ Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseB
 refresh → branch 作成 → commit → pull request 作成を一括実行
 → Association | Failure
 Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, LocalRepoPath -> Automatic, DeleteMissing -> False, Force -> False, Author -> Automatic, Committer -> Automatic, Body -> "", Draft -> False, MaintainerCanModify -> True, Fallback -> False
+
+## 外部フォルダのコミット
+`$packageDirectory` のパッケージ以外の任意フォルダ dir を GitHub へ上げる。すべて承認対象(trusted head 非登録。Preview も任意ローカルフォルダを走査し GitHub に問い合わせるため)。既定 private のみ許可。
+
+### GitHubFolderCommitPreview[dir, opts]
+dir を既存リポジトリへコミットしたときの差分を、何も変更せず返す。ローカルとリモートの Git blob SHA を比較。公開リポジトリは既定で `Failure["PublicRepositoryNotAllowed"]`
+→ `<|"Status" ("Ready"|"NoChange"), "Owner", "Repository", "Private", "Visibility", "Branch", "Added", "Changed", "RemoteOnly", "ChangeCount", "Changes", "Excluded", "Warnings"|>` | Failure
+Options: Repository -> Automatic (フォルダ名), Owner -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, CreateBranch -> Automatic, DeleteMissing -> False, Public -> False (True で公開リポジトリを許可), "ExcludePatterns" -> {} (相対パス前方一致、* 可)
+例: GitHubFolderCommitPreview["C:/work/results", Repository -> "results-2026"]
+
+### GitHubFolderCommit[dir, message, opts]
+dir の内容を既存リポジトリへコミット。実行直前に Preview と同じ差分・可視性確認をやり直し、変更なしなら `<|"Status" -> "NoChange"|>`。公開許可時も CodePrivacyLevel > 0 があれば `Failure["PrivateCodeBlocked"]`。DeleteMissing -> True はローカルに無いリモートファイルを削除(事前に Preview で確認)
+→ Association | Failure
+Options: GitHubFolderCommitPreview と同じ + Force -> False, Author -> Automatic, Committer -> Automatic
+例: GitHubFolderCommit["C:/work/results", "Update results", Repository -> "results-2026"]
+
+### GitHubFolderCreateRepository[dir, opts]
+GitHub に新規リポジトリを作り dir の内容を最初のコミットとして上げる。既定 private。公開は Public -> True(作成前に CodePrivacyLevel 関所を通す)。同名リポジトリが既にあれば作成失敗し何も送らない(既存へは GitHubFolderCommit)。private を要求したのに作成結果が private でなければファイルを送らず失敗
+→ Association | Failure
+Options: Repository -> Automatic (フォルダ名), Public -> False, Description, Homepage, GitignoreTemplate, LicenseTemplate, "ExcludePatterns" -> {}, "CommitMessage" -> Automatic
+例: GitHubFolderCreateRepository["C:/work/results", Repository -> "results-2026"]
 
 ## リポジトリ名 DB
 日本語パッケージ名 → 英語リポジトリ名の対応表 (`GithubRepositories/repo_database.json`)。
@@ -197,6 +220,7 @@ Options: MaxItems -> 50 (リポジトリ毎), "IncludePullRequests" -> False
 
 ### GitHubIssueAddComment[packageName, number, body, opts] → Association | Failure
 Issue へコメントを投稿する。公開リポジトリへの書き込みのため承認ゲート対象(trusted head 非登録)。呼び出し側で内容の秘匿情報(ローカルパス等)を除去してから渡すこと。SourceVaultIssueNotifyGitHub (解決通知) の送信層
+→ `<|"URL", "Id", "CreatedAt"|>` | Failure
 Options: Owner -> Automatic, Repository -> Automatic
 
 ## GitHub 稼働状況
@@ -210,7 +234,7 @@ Options: "Timeout" -> 20
 GitHubRefreshAndCommit の前段。docs 鮮度ゲート → 前回コミット差分 → コミットメッセージ案 → DryRun 既定駆動。
 
 ### PackageDocsFreshnessGate[packageName] → Association
-`<pkg>_info/docs` 配下の api.md / api_*.md が対応 .wl 以降に更新されているか検査。対応規則: api.md↔`<pkg>.wl`、api_<sfx>.md↔`<pkg>_<sfx>.wl`。補助ソース(.wl)の内容ハッシュが `.aux_source_hashes.json` に記録済みの場合は内容基準で判定(Dropbox 同期等による mtime 揺れを無視)し、未記録時のみ mtime にフォールバック。1つでも古ければ Proceed -> False。docs フォルダが無ければ Status -> "NoDocs" で Proceed -> True
+`<pkg>_info/docs` 配下の api.md / api_*.md が対応 .wl 以降に更新されているか検査。対応規則: api.md↔`<pkg>.wl`、api_<sfx>.md↔`<pkg>_<sfx>.wl`。補助ソース(.wl)の内容ハッシュが `.aux_source_hashes.json` に記録済みの場合は内容基準で判定(Dropbox 同期等による mtime 揺れを無視)し、未記録時のみ mtime にフォールバック。1つでも古ければ Proceed -> False。docs フォルダが無ければ Status -> "NoDocs" で Proceed -> True。対応 .wl が無い api ドキュメントは検査対象外
 → `<|Status ("OK"|"NoDocs"|"Failed"), Package, Proceed, Checked, StaleDocs (各 <|Doc,Wl,DocDate,WlDate|>), DocsDir|>`
 
 ### PackageCommitDiff[packageName] → Association
@@ -225,7 +249,7 @@ Options: "MessageGenerator" -> Automatic (Automatic は $PackageCommitModel で�
 ### PackageCommit[packageName, opts] → Association
 メイン駆動関数。PackageCommitPlan 実行後、Status -> OK のとき GitHubRefreshAndCommit を呼ぶ
 → `<|Status (DryRun|Committed|Blocked|NoChange|Failed), Committed, CommitMessage, ...|>`
-Options: "DryRun" -> True (既定。実コミットせず計画とメッセージ案を返す), "MessageGenerator" -> Automatic, "SkipDocsGate" -> False (True は DryRun プレビュー専用。実コミット (DryRun -> False) では SkipDocsGate に関わらず docs 古ければ Blocked で停止), "DeleteMissing" -> False (True で GitHubRefreshAndCommit へ転送しリモート残骸を削除。実行前に PackageCommitDeletionPreview で削除候補を必ず確認すること), "AllowAckRemoval" -> False (README の「## 謝辞」節が消えるコミットは既定で Blocked。意図的削除時のみ True)
+Options: "DryRun" -> True (既定。実コミットせず計画とメッセージ案を返す), "MessageGenerator" -> Automatic, "SkipDocsGate" -> False (True は DryRun プレビュー専用。実コミット (DryRun -> False) では SkipDocsGate に関わらず docs 古ければ Blocked で停止し StaleDocs を返す), "DeleteMissing" -> False (True で GitHubRefreshAndCommit へ転送しリモート残骸を削除。実行前に PackageCommitDeletionPreview で削除候補を必ず確認すること), "AllowAckRemoval" -> False (README の「## 謝辞」節が消えるコミットは既定で Blocked。意図的削除時のみ True)
 例: PackageCommit["github", "DryRun" -> False, "MessageGenerator" -> PackageLLMMessageGenerator[$iModelSonnet]]
 
 ### PackageCommitDeletionPreview[packageName] → Association
@@ -249,3 +273,4 @@ PackageCommit / PackageCommitPlan の既定コミットメッセージモデル�
 
 ## オプションシンボル一覧
 Owner, Repository, Public, Description, Homepage, AutoInit, GitignoreTemplate, LicenseTemplate, Branch, BaseBranch, CreateBranch, LocalRepoPath, PackageFile, IncludePackageFile, ReturnType, Clean, Force, DeleteMissing, Head, Body, Draft, MaintainerCanModify, Author, Committer, ExtraDirectories, MaxItems, Fallback
+注: DeleteMissing / Head / MaxItems は System` 組み込みシンボルを流用(::usage 未定義)。別パッケージから `GitHubREST`MaxItems` と修飾して参照すると別シンボルが生成され System`MaxItems を shadow するので、修飾せず書くこと。Public は GitHubFolder*/外部 LocalRepoPath の GitHubCommit では「公開リポジトリへのコミット許可」を意味する。
