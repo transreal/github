@@ -170,6 +170,8 @@ GitHubValidateManifest["mypackage"]
 
 **既定で保護される除外パターン:** マニフェストの `excludePatterns` の設定有無に関わらず、`<<パッケージ名>>_info/history/`・`<<パッケージ名>>_info/references/`・`<<パッケージ名>>_info/docs/docs/` は常に除外対象として保護されます。この保護は pull コピー・push スナップショット・stale ファイル掃除のすべての経路に適用されます。特に `docs/docs/` パターンは、過去の同期事故でリポジトリ内にネストした `docs` フォルダの重複が混入した際、pull のたびにローカルへ再生成されて doc 更新対象が膨張し続ける（→ push で再コミットが繰り返される）永久ループを断つために追加されました。リポジトリ側に残骸があってもローカルへは二度と取り込まれません。
 
+**英語版 docs（`docs/en/`）の扱い（2026-10-08）:** `<pkg>_info/docs/en/`（Paclet の場合は `<pkg>/docs/en/`）は、`<pkg>_info/references/doc_options.json` の `"EnglishDocs"` が `true` のときだけミラーへコピーされます。記述がない、または `false` の場合は `en/` はコピー対象外となり、ミラーに残っていた `en/` は次回の掃除（stale ファイル削除）でミラーから消えます。なお、`en/` を保護パターンにはしていないため、通常の除外パターンによる掃除・差分の Removed 判定は従来のままです。詳細は「9. パッケージ自動コミット」の「英語版 docs の公開可否」を参照してください。
+
 ```mathematica
 GitHubRefreshLocalPackageGroup["mypackage"]
 (* -> <|"CopiedFiles" -> {...},
@@ -302,6 +304,8 @@ GitHubRefreshAndCommit["mypackage", "chore: sync files"]
 GitHubRefreshAndCommit["mypackage", "sync",
   ExtraDirectories -> {"Claude Directives"}]
 ```
+
+**英語版 docs（`docs/en/`）の公開可否（2026-10-08）:** `doc_options.json` の `"EnglishDocs"` が `true` でないパッケージでは、`docs/en/` はミラーへコピーされないだけでなく、ミラーから外れてリモートに残っている `docs/en/` 配下のファイルも、`DeleteMissing` を指定しなくてもこのコミットで削除されます（削除したファイルは `[GitHubCommit] 英語版 docs を削除 (doc_options.json の EnglishDocs が無効): ...` として表示されます）。外部フォルダのコミットや、通常のリモート専用ファイルの扱い（`DeleteMissing`）には影響しません。
 
 主なオプション: `Owner`, `Repository`, `Branch`, `BaseBranch`, `CreateBranch`, `DeleteMissing`, `Force`, `Author`, `Committer`, `ExtraDirectories`, `Fallback`
 
@@ -614,6 +618,7 @@ $GitHubLicenseHolder = "Katsunobu Imai"
 - **前回コミット差分** — 現ソースと前回コミットスナップショットを読み取り専用で比較します。
 - **コミットメッセージ案** — 差分から決定論的な単文、または LLM で要約したメッセージを生成します。
 - **削除プレビュー** — `DeleteMissing -> True` で削除される予定のリモートファイルを実行前に読み取り専用で確認します。
+- **英語版 docs の公開制御** — `docs/en/` は `doc_options.json` の `EnglishDocs` が有効なときだけ公開し、未作成・未追従なら警告します。
 - **駆動関数** — 既定では DryRun（実コミットせず計画とメッセージ案を返す）で動作し、確認後に実コミットへ進みます。
 
 典型的なワークフローは次のとおりです。
@@ -661,6 +666,7 @@ PackageDocsFreshnessGate["github"]
 - `upload_manifest.json` を直接 `Import` します（`GitHubReadManifest` はマニフェストを自動編集するため呼びません）。
 - `GitHubRefreshAndCommit` の前方マッピング（`files` = basename、`directories` = 相対パス + 除外パターン）を再現して、ソース ↔ スナップショットを内容比較します。
 - **必ずリフレッシュ前に呼んでください。** リフレッシュ後はスナップショットが上書きされ、差分が消えてしまいます。
+- 差分の Removed 判定は通常の除外パターンで行われます。そのため、`EnglishDocs` が無効なパッケージでは、スナップショットに残っている `docs/en/` は Removed として現れます。
 
 **補助 `.wl` ファイル自動検出との整合（2026-09-06）:** マニフェストにまだ登録されていない `<<パッケージ名>>_<<追加文字列>>.wl` 形式の補助ファイル（例: `documentation_paper2nb.wl`）がディスク上に新規に存在する場合、実コミット（`GitHubRefreshAndCommit` → `iRefreshPackageGroup` → `iEnsureManifest`）はこの補助ファイルを自動的に `"files"` へ追加してからミラーへコピーします。以前は `PackageCommitDiff` がディスク上の `upload_manifest.json` をそのまま読むだけだったため、こうした未登録の補助ファイルが `Added` に反映されず、`PackageCommitDiff` / `PackageCommitPlan` の差分・`NoChange` 判定・DryRun のコミットメッセージ案が実際のコミット結果と食い違うことがありました。現在は `PackageCommitDiff` 側でも同じ自動追加規則（および競合コピーの除外・`CodePrivacyLevel` > 0 ファイルの除外）を `iDiscoverAuxWLFiles` 経由で読み取り専用に適用してから比較するため、実コミットの内容と一致するようになりました。ディスク上の `upload_manifest.json` 自体は書き換えません（差分計算のためだけの一時的な補完です）。
 
@@ -733,7 +739,26 @@ PackageCommit["github", "DryRun" -> False, "DeleteMissing" -> True]
 
 **`"DeleteMissing" -> True` を使う前の注意:** 削除対象は「リモートにあってローカルミラーに無いもの全部」です。実行前に必ず `PackageCommitDeletionPreview[packageName]` で削除候補を確認してください。また、既定除外パターンで保護されたミラー内ファイル（`docs/docs` 等）は先にミラーから手動削除しないとツリーに残り続け、削除対象になりません。
 
-戻り値: `<|Status (DryRun | Committed | Blocked | NoChange | Failed), Committed, CommitMessage, ...|>`
+#### 英語版 docs（`docs/en/`）の公開可否（2026-10-08）
+
+英語版 docs は、`<pkg>_info/references/doc_options.json`（Paclet の場合は対応する `references` フォルダ）の `"EnglishDocs"` が `true` のときだけ GitHub に公開されます。この値は claudecode の `ClaudeCreateDocumentation` / `ClaudeUpdateDocumentation` の `"EnglishDocs"` オプションによって記録されます。
+
+| `doc_options.json` の `EnglishDocs` | 動作 |
+|---|---|
+| `true` | `docs/en/` をミラーへコピーしてコミットします。`en/` が未作成（Missing）または日本語版に追従していない（Stale）場合は警告を出しますが、**コミットは止めません** |
+| 記述なし / `false`（= `$Language` の docs のみ） | `docs/en/` はミラーへコピーしません。ミラーとリモートに残っている `en/` は削除します（`DeleteMissing` を指定していなくても削除されます） |
+
+- 判定は `docs/en/` 配下（単一 `.wl` では `<pkg>_info/docs/en/`、Paclet では `<pkg>/docs/en/`）のパスを対象とします。
+- 未作成／古い `en/` の判定は claudecode（`iDocEnMissingDocs` / `iDocEnStaleDocs`）が行います。claudecode が未ロードの場合は Missing / Stale を調べず、警告も出ません。
+- 警告は `PackageCommit::englishdocs` として表示され、未作成・古い docs の一覧が示されます。推奨される対応は、`ClaudeUpdateDocumentation["パッケージ名"]` で英訳を日本語版に追従させてからコミットすることです。
+- `en/` の状況は、`PackageCommit` の戻り値の `"EnglishDocs"` キー（`<|"Enabled" -> True|False, "Missing" -> {...}, "Stale" -> {...}|>`）で確認できます。DryRun の結果にも含まれます。
+
+```mathematica
+PackageCommit["github"]["EnglishDocs"]
+(* -> <|"Enabled" -> True, "Missing" -> {"api_core.md"}, "Stale" -> {}|> *)
+```
+
+戻り値: `<|Status (DryRun | Committed | Blocked | NoChange | Failed), Committed, CommitMessage, EnglishDocs, ...|>`
 
 ---
 
@@ -877,7 +902,7 @@ GitHubFolderCommit["C:/work/results", "Sync",
 | `AutoInit` | `True` | 初期化時に README を含めるか |
 | `Clean` | `False` | Pull 時にローカルを先に削除するか |
 | `Force` | `False` | ref 更新を強制するか |
-| `DeleteMissing` | `False` | Commit 時にリモート専用ファイルを削除するか（削除エントリの `"sha"` には JSON `null` に対応する `Null` を指定。`None` は JSON シリアライズ不能なため使用不可）。`GitHubFolderCommit` でも同様で、実行前にプレビューで確認すること |
+| `DeleteMissing` | `False` | Commit 時にリモート専用ファイルを削除するか（削除エントリの `"sha"` には JSON `null` に対応する `Null` を指定。`None` は JSON シリアライズ不能なため使用不可）。`GitHubFolderCommit` でも同様で、実行前にプレビューで確認すること。なお、パッケージのコミットでは `EnglishDocs` が無効な場合の `docs/en/` の削除はこのオプションと無関係に行われる |
 | `ReturnType` | `"Text"` | `GitHubReadFile` の戻り値型（`"Text"` / `"ByteArray"` / `"Bytes"`） |
 | `LocalRepoPath` | `Automatic` | ローカル作業フォルダのパス。`GithubRepositories/<pkg>` 以外を指定すると外部フォルダとして扱われ、コミット先は既定で private リポジトリに限られる（公開は `Public -> True` を明示） |
 | `"ExcludePatterns"` | `{}` | 外部フォルダのコミットで追加除外するパターン（相対パスの前方一致、`*` 可）。`GitHubFolderCommitPreview` / `GitHubFolderCommit` / `GitHubFolderCreateRepository` / 外部フォルダの `GitHubCommit` で有効 |
@@ -911,9 +936,16 @@ GitHubFolderCommit["C:/work/results", "Sync",
 | `"MaxContentChars"` | `4000` | プロンプトに含める変更内容の合計文字数上限 |
 | `"MaxPerFileChars"` | `1500` | ファイル毎の変更内容文字数上限 |
 
+### パッケージ側の設定ファイル `doc_options.json` のキー
+
+| キー | 説明 |
+|---|---|
+| `"EnglishDocs"` | `true` のときだけ `docs/en/` を GitHub に公開する（`ClaudeCreateDocumentation` / `ClaudeUpdateDocumentation` の `"EnglishDocs"` オプションで記録）。記述なし / `false` のときは `en/` をコピーせず、リポジトリ上の `en/` を削除する |
+| `"Originals"` | `GitHubInstallPackage`（パターン C）が記録する、非 `.wl` ファイルの配置情報 |
+
 ---
 
 ## 関連パッケージ
 
 - [NBAccess](https://github.com/transreal/NBAccess) — API キー管理・ノートブック操作
-- [claudecode](https://github.com/transreal/claudecode) — Claude AI との連携(日本語パッケージ名の英語リポジトリ名自動生成、`PackageLLMMessageGenerator` の LLM 呼び出しにも使用)
+- [claudecode](https://github.com/transreal/claudecode) — Claude AI との連携(日本語パッケージ名の英語リポジトリ名自動生成、`PackageLLMMessageGenerator` の LLM 呼び出し、英語版 docs の未作成・未追従判定にも使用)

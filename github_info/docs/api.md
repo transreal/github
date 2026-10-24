@@ -247,8 +247,8 @@ Options: "MessageGenerator" -> Automatic (Automatic は $PackageCommitModel で�
 → `<|Status, Package, Proceed, (StaleDocs | AckLossFiles | Diff | CommitMessage), ...|>`
 
 ### PackageCommit[packageName, opts] → Association
-メイン駆動関数。PackageCommitPlan 実行後、Status -> OK のとき GitHubRefreshAndCommit を呼ぶ
-→ `<|Status (DryRun|Committed|Blocked|NoChange|Failed), Committed, CommitMessage, ...|>`
+メイン駆動関数。PackageCommitPlan 実行後、Status -> OK のとき GitHubRefreshAndCommit を呼ぶ。英語版 docs (`docs/en/`) は `<pkg>_info/references/doc_options.json` の `"EnglishDocs"` が true のときだけ公開する(ClaudeCreate/UpdateDocumentation の `"EnglishDocs"` オプションで記録)。記述なし/false なら en/ はコピーせず、リポジトリに残っている en/ は削除する。true で en/ が未作成/日本語版に未追従なら警告(コミットは止めない)
+→ `<|Status (DryRun|Committed|Blocked|NoChange|Failed), Committed, CommitMessage, EnglishDocs, ...|>`
 Options: "DryRun" -> True (既定。実コミットせず計画とメッセージ案を返す), "MessageGenerator" -> Automatic, "SkipDocsGate" -> False (True は DryRun プレビュー専用。実コミット (DryRun -> False) では SkipDocsGate に関わらず docs 古ければ Blocked で停止し StaleDocs を返す), "DeleteMissing" -> False (True で GitHubRefreshAndCommit へ転送しリモート残骸を削除。実行前に PackageCommitDeletionPreview で削除候補を必ず確認すること), "AllowAckRemoval" -> False (README の「## 謝辞」節が消えるコミットは既定で Blocked。意図的削除時のみ True)
 例: PackageCommit["github", "DryRun" -> False, "MessageGenerator" -> PackageLLMMessageGenerator[$iModelSonnet]]
 

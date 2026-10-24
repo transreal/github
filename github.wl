@@ -390,7 +390,10 @@ PackageCommit::usage =
   "      \"SkipDocsGate\" -> False (True は DryRun プレビュー専用でゲートを無視。実コミット (DryRun -> False) では\n" <>
   "      SkipDocsGate に関わらず docs 古ければ Blocked で停止し StaleDocs を返す)、\n" <>
   "      \"AllowAckRemoval\" -> False (README の「## 謝辞」節が消えるコミットは Blocked。意図的削除時のみ True)。\n" <>
-  "戻り値: <|Status (DryRun|Committed|Blocked|NoChange|Failed), Committed, CommitMessage, ...|>。";
+  "英語版 docs (docs/en/) は <pkg>_info/references/doc_options.json の \"EnglishDocs\" が true のときだけ公開する\n" <>
+  "(ClaudeCreate/UpdateDocumentation の \"EnglishDocs\" オプションで記録)。記述なし/false なら en/ はコピーせず、\n" <>
+  "リポジトリに残っている en/ は削除する。true で en/ が未作成/日本語版に未追従なら警告 (コミットは止めない)。\n" <>
+  "戻り値: <|Status (DryRun|Committed|Blocked|NoChange|Failed), Committed, CommitMessage, EnglishDocs, ...|>。";
 
 PackageLLMMessageGenerator::usage =
   "PackageLLMMessageGenerator[queryFn, opts] は LLM でコミットメッセージを生成する\n" <>
@@ -1415,6 +1418,37 @@ iDefaultExcludePatterns[packageName_String] := {
   iInfoDirName[packageName] <> "/docs/docs/"
 };
 
+(* === 英語版 docs (docs/en/) の公開可否 (2026-10-08) ===
+   claudecode の ClaudeCreate/UpdateDocumentation が "EnglishDocs" オプションで
+   <pkg>_info/references/doc_options.json に記録する。true のときだけ en/ をミラーへ
+   コピーしてコミットする。記述なし/false (= $Language の docs のみ) なら en/ は
+   コピーせず、ミラーとリモートに残っている en/ は削除する。 *)
+iEnglishDocsEnabledQ[packageName_String] :=
+  Module[{p = FileNameJoin[{iPackageDirectory[], iInfoDirName[packageName], "references",
+      "doc_options.json"}], j},
+    If[!FileExistsQ[p], Return[False]];
+    j = Quiet @ Check[Import[p, "RawJSON"], <||>];
+    AssociationQ[j] && TrueQ[Lookup[j, "EnglishDocs", False]]];
+
+iEnglishDocsPatterns[packageName_String] :=
+  {iInfoDirName[packageName] <> "/docs/en/", packageName <> "/docs/en/"};
+
+iEnglishDocsPathQ[packageName_String, relPath_String] :=
+  AnyTrue[iEnglishDocsPatterns[packageName], StringStartsQ[relPath, #] &];
+
+(* ミラーへのコピー時に使う除外パターン: EnglishDocs が無効なら en/ も除外する。
+   掃除 (iCleanStaleLocalFiles) と差分の Removed 判定は通常の除外パターンのままなので、
+   ミラーに残っていた en/ は削除扱いになる (en/ を保護パターンにはしない)。 *)
+iCopyExcludePatterns[packageName_String, excludePatterns_List] :=
+  If[iEnglishDocsEnabledQ[packageName], excludePatterns,
+    DeleteDuplicates[Join[excludePatterns, iEnglishDocsPatterns[packageName]]]];
+
+(* GitHubCommit 用: EnglishDocs が無効なら、ミラーに無いリモートの docs/en/ を削除対象にする *)
+iEnglishDocsRemoteDeletions[packageName_String, remotePaths_List, localPaths_List] :=
+  If[iEnglishDocsEnabledQ[packageName], {},
+    Select[Complement[Select[remotePaths, StringQ], localPaths],
+      iEnglishDocsPathQ[packageName, #] &]];
+
 (* マニフェストの excludePatterns にデフォルト保護パターンを統合 *)
 iMergedExcludePatterns[packageName_String] :=
   Module[{manifest, patterns},
@@ -1942,12 +1976,14 @@ iRefreshPackageGroup[packageName_String, localDir_String] :=
       ],
       {file, Lookup[manifest, "files", {}]}
     ];
-    (* ディレクトリの再帰コピー *)
+    (* ディレクトリの再帰コピー (doc_options.json の EnglishDocs が無効なら docs/en/ はコピーしない。
+       コピーしなかった en/ は直後の iCleanStaleLocalFiles がミラーから消す) *)
     Do[
       src = FileNameJoin[{pkgDir, dir}];
       If[DirectoryQ[src],
         copiedDirs = Join[copiedDirs,
-          iCopyDirectoryFiltered[src, localDir, dir, excludePatterns]
+          iCopyDirectoryFiltered[src, localDir, dir,
+            iCopyExcludePatterns[packageName, excludePatterns]]
         ]
       ],
       {dir, Lookup[manifest, "directories", {}]}
@@ -2513,7 +2549,17 @@ GitHubCommit[packageName_String, message_String, opts : OptionsPattern[]] :=
         entries = Join[entries,
           (<|"path" -> #, "mode" -> "100644", "type" -> "blob", "sha" -> Null|> & /@ deletePaths)
         ]
-      ]
+      ];
+      (* 英語版 docs が無効 (doc_options.json の EnglishDocs が true でない) パッケージは、
+         ミラーから外れたリモートの docs/en/ を DeleteMissing なしでも削除する (2026-10-08) *)
+      If[!externalQ && !TrueQ[OptionValue[DeleteMissing]],
+        Module[{enDel = iEnglishDocsRemoteDeletions[packageName,
+            Keys[remoteSHAMap], Lookup[entries, "path"]]},
+          If[enDel =!= {},
+            Print["[GitHubCommit] 英語版 docs を削除 (doc_options.json の EnglishDocs が無効): " <>
+              StringRiffle[enDel, ", "]];
+            entries = Join[entries,
+              (<|"path" -> #, "mode" -> "100644", "type" -> "blob", "sha" -> Null|> & /@ enDel)]]]]
     ];
     (* entries が空なら blob 作成で問題が起きた可能性がある *)
     If[Length[entries] === 0,
@@ -4863,16 +4909,18 @@ PackageCommitDiff[pkg_String] := Module[
           AppendTo[changed, rel]; AppendTo[copiedRel, rel];
           AppendTo[changedDetail, <|"Rel" -> rel, "Src" -> srcP, "Snap" -> snapP|>]]],
     {file, files}];
-  (* --- ディレクトリ: src/<dir>/<rest> -> snap/<dir>/<rest> (exclude 適用) --- *)
+  (* --- ディレクトリ: src/<dir>/<rest> -> snap/<dir>/<rest> (exclude 適用) ---
+     EnglishDocs が無効なら docs/en/ はコピー対象外 (iRefreshPackageGroup と同じ規則)。
+     下の removed 判定は通常の patterns なので、スナップショットの en/ は Removed になる。 *)
   Do[
-    Module[{dirAbs, srcFiles},
+    Module[{dirAbs, srcFiles, copyPatterns = iCopyExcludePatterns[pkg, patterns]},
       dirAbs = FileNameJoin[{srcDir, dir}];
       If[DirectoryQ[dirAbs],
         srcFiles = iPACDirFiles[dirAbs];
         Do[
           Module[{rel, snapP},
             rel = iPACDirRel[dir, dirAbs, f];
-            If[! iPACExcluded[rel, patterns],
+            If[! iPACExcluded[rel, copyPatterns],
               snapP = FileNameJoin[Flatten[{snapDir, FileNameSplit[rel]}]];
               AppendTo[copiedRel, rel];
               Which[
@@ -5043,8 +5091,23 @@ PackageCommitPlan[pkg_String, OptionsPattern[]] := Module[
   msg = iPACResolveMessage[OptionValue["MessageGenerator"], diff];
   <|"Status" -> "OK", "Package" -> pkg, "Proceed" -> True,
     "StaleDocs" -> staleWarn, "DocsGateSkipped" -> (skipGate && ! gateProceed),
+    "EnglishDocs" -> iPACEnglishDocsStatus[pkg],
     "Diff" -> diff, "CommitMessage" -> msg|>
 ];
+
+(* 英語版 docs の状態 (警告用・コミットは止めない): doc_options.json の EnglishDocs と、
+   有効なら claudecode が判定する未作成 (Missing) / 日本語版に追従していない (Stale) の en/。
+   claudecode 未ロード時は Missing/Stale を調べない。 *)
+iPACEnglishDocsStatus[pkg_String] := Module[
+  {enabled = iEnglishDocsEnabledQ[pkg], docsDir, stale = {}, missing = {}},
+  docsDir = SelectFirst[{
+      FileNameJoin[{iPackageDirectory[], pkg <> "_info", "docs"}],
+      FileNameJoin[{iPackageDirectory[], pkg, "docs"}]}, DirectoryQ, None];
+  If[enabled && StringQ[docsDir] &&
+     Length[DownValues[ClaudeCode`Private`iDocEnStaleDocs]] > 0,
+    stale = Quiet @ Check[ClaudeCode`Private`iDocEnStaleDocs[docsDir], {}];
+    missing = Quiet @ Check[ClaudeCode`Private`iDocEnMissingDocs[docsDir], {}]];
+  <|"Enabled" -> enabled, "Missing" -> missing, "Stale" -> stale|>];
 
 PackageCommitPlan[___] :=
   <|"Status" -> "Failed",
@@ -5053,6 +5116,10 @@ PackageCommitPlan[___] :=
 PackageCommit::staledocs =
   "`1` は api ドキュメント (`2`) が対応 .wl より古いため、実コミットを停止しました。" <>
   "ドキュメントを更新してから再実行するか、確認だけなら DryRun + SkipDocsGate -> True を使ってください。";
+
+PackageCommit::englishdocs =
+  "`1` の英語版 docs (en/) が日本語版に追従していません (未作成: `2` / 古い: `3`)。" <>
+  "ClaudeUpdateDocumentation[\"`1`\"] で英訳を追従してからコミットすることを推奨します (コミットは止めません)。";
 
 PackageCommit::ackloss =
   "`1` のコミットで README の「## 謝辞」節が失われるため停止しました (`2`)。" <>
@@ -5118,11 +5185,19 @@ PackageCommit[pkg_String, OptionsPattern[]] := Module[
       (* それ以外 (DryRun Blocked / NoChange / Failed): CommitMessage を意味のある Missing で補う。 *)
       Return[Append[plan, <|"Committed" -> False,
         "CommitMessage" -> iPACNoCommitMessage[st, pkg, plan]|>]]]];
+  (* 英語版 docs (doc_options.json の EnglishDocs が true) が未作成/古ければ警告 (止めない) *)
+  Module[{en = Lookup[plan, "EnglishDocs", <||>]},
+    If[TrueQ[Lookup[en, "Enabled", False]] &&
+       (Lookup[en, "Missing", {}] =!= {} || Lookup[en, "Stale", {}] =!= {}),
+      Message[PackageCommit::englishdocs, pkg,
+        StringRiffle[Lookup[en, "Missing", {}], ", "] /. "" -> "なし",
+        StringRiffle[Lookup[en, "Stale", {}], ", "] /. "" -> "なし"]]];
   If[dry,
     Return[<|"Status" -> "DryRun", "Package" -> pkg, "Committed" -> False,
       "CommitMessage" -> plan["CommitMessage"], "Diff" -> plan["Diff"],
       "DocsGateSkipped" -> Lookup[plan, "DocsGateSkipped", False],
       "StaleDocs" -> Lookup[plan, "StaleDocs", {}],
+      "EnglishDocs" -> Lookup[plan, "EnglishDocs", <||>],
       "Note" -> "DryRun -> False で実コミット (GitHubRefreshAndCommit) を実行。"|>]];
   res = GitHubRefreshAndCommit[pkg, plan["CommitMessage"],
     DeleteMissing -> TrueQ[OptionValue["DeleteMissing"]]];
@@ -5130,6 +5205,7 @@ PackageCommit[pkg_String, OptionsPattern[]] := Module[
     "Committed" -> ! FailureQ[res], "CommitMessage" -> plan["CommitMessage"],
     "DocsGateSkipped" -> Lookup[plan, "DocsGateSkipped", False],
     "StaleDocs" -> Lookup[plan, "StaleDocs", {}],
+    "EnglishDocs" -> Lookup[plan, "EnglishDocs", <||>],
     "Result" -> res|>
 ];
 

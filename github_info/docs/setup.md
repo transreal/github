@@ -9,7 +9,7 @@
 GitHubパッケージは以下のパッケージに依存しています：
 
 - **[NBAccess](https://github.com/transreal/NBAccess)**: API認証とキー管理を担当します
-- **[claudecode](https://github.com/transreal/claudecode)**: Claude Code環境での動作に必要です。コミットメッセージのLLM自動生成 (`PackageLLMMessageGenerator`) を利用する場合にも使用されます
+- **[claudecode](https://github.com/transreal/claudecode)**: Claude Code環境での動作に必要です。コミットメッセージのLLM自動生成 (`PackageLLMMessageGenerator`) や、英語版 docs (`docs/en/`) の未作成・未追従の判定にも使用されます
 
 これらのパッケージが`$packageDirectory`にインストールされていることを確認してください。
 
@@ -77,7 +77,10 @@ $packageDirectory/
 │   └── [packageName]/          (* 各パッケージのローカルコピー *)
 ├── [packageName]_info/          (* パッケージメタデータ *)
 │   ├── upload_manifest.json    (* アップロード対象ファイル設定 *)
+│   ├── references/
+│   │   └── doc_options.json    (* ドキュメント生成オプション (EnglishDocs など) *)
 │   └── docs/                   (* ドキュメントフォルダ *)
+│       └── en/                 (* 英語版 docs (EnglishDocs が true のときだけ公開) *)
 └── [packageName].wl             (* パッケージファイル *)
 ```
 
@@ -99,6 +102,19 @@ $packageDirectory/
 - 先頭に `:CodePrivacyLevel:` マーカーがあり、値が `0` より大きいファイル（非公開コード）
 
 以前は、まだ manifest に載っていない補助モジュールがディスク上に存在すると、`PackageCommitDiff` の Added 判定や DryRun のプレビュー・コミットメッセージ・NoChange 判定が、実際にコミットされる内容と食い違うことがありました。この自動追加規則によりズレが解消されています。
+
+### 英語版 docs (`docs/en/`) の公開可否
+
+英語版 docs (`docs/en/`) は、`<packageName>_info/references/doc_options.json` の `"EnglishDocs"` が `true` のときだけ GitHub へ公開されます。この値は `claudecode` の `ClaudeCreateDocumentation` / `ClaudeUpdateDocumentation` の `"EnglishDocs"` オプションで記録されます。
+
+| `doc_options.json` の状態 | 動作 |
+|---|---|
+| `"EnglishDocs": true` | `docs/en/` をミラーへコピーしてコミットします。未作成 (Missing) または日本語版に追従していない (Stale) `en/` があれば警告を出します（コミットは止めません） |
+| 記述なし / `false` | `docs/en/` はミラーへコピーしません。ミラーとリモートリポジトリに残っている `en/` は削除されます |
+
+この規則は `GitHubRefreshLocalPackageGroup` / `GitHubCreateRepository` / `GitHubRefreshAndCommit` / `PackageCommit` で共通です。`DeleteMissing -> True` を指定していなくても、`EnglishDocs` が無効なら `GitHubCommit` はリモートの `docs/en/` を削除対象にします。
+
+英語版を公開する場合は、`ClaudeUpdateDocumentation["packageName"]` で英訳を日本語版に追従させてからコミットすることを推奨します。
 
 ## 次のステップ
 
@@ -148,6 +164,8 @@ PackageCommit["myPackage", "DryRun" -> False]
 
 ドキュメントが古く `Blocked` になった場合は、ドキュメントを更新してから再実行してください。メッセージ案だけを確認したい場合は `DryRun` のまま `"SkipDocsGate" -> True` を指定するとゲートを無視してプレビューできます（実コミットでは `SkipDocsGate` は無効で、必ず鮮度ゲートが適用されます）。
 
+`PackageCommit` の戻り値は `<|Status (DryRun|Committed|Blocked|NoChange|Failed), Committed, CommitMessage, EnglishDocs, ...|>` です。`EnglishDocs` には `<|"Enabled", "Missing", "Stale"|>` の形で英語版 docs の状態が入ります。`EnglishDocs` が有効で `en/` が未作成または日本語版に未追従の場合は、警告メッセージ (`PackageCommit::englishdocs`) が表示されますが、コミットは止まりません。判定には `claudecode` が必要で、未ロード時は Missing / Stale の確認を行いません。
+
 ## 補足: 削除を伴うコミットの安全確認
 
 `PackageCommit` は `"DeleteMissing" -> False` を既定値とするオプションを持ちます。`True` を指定すると、リモートの tree にはあるがローカルミラーに存在しないファイル（blob）を削除対象としてコミットに含めます。
@@ -162,6 +180,8 @@ PackageCommitDeletionPreview["myPackage"]
 (* 確認後、削除を伴う実コミットを行う場合 *)
 PackageCommit["myPackage", "DryRun" -> False, "DeleteMissing" -> True]
 ```
+
+なお、`EnglishDocs` が無効なパッケージのリモート `docs/en/` は、`DeleteMissing` の指定に関わらず削除対象になります（コミット時に削除したパスがログ出力されます）。
 
 ## 補足: 外部フォルダのコミット
 

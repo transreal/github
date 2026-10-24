@@ -18,6 +18,10 @@ APIキーをコード中に直書きしない安全設計を採用していま�
 
 ミラーへのリフレッシュ時には、すべての `.md` ファイルに対して先頭の偽 front matter（独立した `---` 行）を自動除去します（GitHub がこれを YAML front matter として誤解釈し本文が消えてしまう事故を防ぐため）。本物の front matter（閉じ `---` と `key: value` を持つもの）はそのまま保持されます。また `_info/docs/README.md` をトップレベル `README.md` として配置する際は、本文中の相対リンク（`api.md`・`examples/...` など）が docs フォルダ基準で書かれているためそのままではリンク切れになる問題を避けるべく、ルート用コピーに限り `<packageName>_info/docs/` を前置してリポジトリルート基準に自動的に張り直します（リンク先がミラーに実在する場合のみ置換し、`docs/README.md` 本体は変更しません）。
 
+## 英語版ドキュメントの公開制御
+
+英語版 docs（`docs/en/`）は、`<packageName>_info/references/doc_options.json` の `"EnglishDocs"` が `true` のときだけ GitHub へ公開されます（この値は [claudecode](https://github.com/transreal/claudecode) のドキュメント生成・更新時に記録されます）。`true` の場合は `docs/en/` をミラーへコピーしてコミットし、未作成（Missing）または日本語版に追従していない（Stale）場合は警告を出します（コミットは止めません）。記述なし / `false` の場合は `docs/en/` をミラーへコピーせず、ミラーとリモートに残っている `en/` は削除対象になります。この規則は `GitHubRefreshLocalPackageGroup` / `GitHubCreateRepository` / `GitHubRefreshAndCommit` / `PackageCommit` で共通で、`DeleteMissing -> True` を指定していなくても `EnglishDocs` が無効ならリモートの `docs/en/` は削除されます。
+
 ## 外部フォルダのコミットと公開ガード
 
 `GithubRepositories/<packageName>` 配下だけが「パッケージ管理下」のフォルダで、`$packageDirectory` 直下やその他のサブフォルダは**外部フォルダ**として扱われます。論文の計算結果フォルダなど、パッケージ以外の任意のフォルダも GitHub へ反映できるよう、`GitHubFolderCommitPreview` / `GitHubFolderCommit` / `GitHubFolderCreateRepository` を用意しています。外部フォルダのコミットは**既定で private リポジトリにのみ許可**され、公開リポジトリへは `Public -> True` を明示したときだけ許可されます（可視性が読めない応答も fail-closed）。この関所は `GitHubCommit` 本体にあるため、`LocalRepoPath` を直接渡す呼び方でも同じ判定を通ります。外部フォルダでは `.git/`・`desktop.ini`・`Thumbs.db`・`.DS_Store`・同期競合コピーなどを常に除外し、`.gitignore` は解釈せず `"ExcludePatterns"` で指定します。
@@ -82,7 +86,7 @@ GitHub リポジトリ名には ASCII 文字しか使えないため、日本語
 |------|------|
 | Mathematica | 13.0 以上推奨 |
 | OS | Windows 11 想定（macOS / Linux は未検証） |
-| 依存パッケージ | [NBAccess](https://github.com/transreal/NBAccess)、[claudecode](https://github.com/transreal/claudecode)（日本語パッケージ名の自動翻訳・コミットメッセージの LLM 生成に使用） |
+| 依存パッケージ | [NBAccess](https://github.com/transreal/NBAccess)、[claudecode](https://github.com/transreal/claudecode)（日本語パッケージ名の自動翻訳・コミットメッセージの LLM 生成・英語版 docs の未作成/未追従判定に使用） |
 | 外部サービス | GitHub アカウント・Personal Access Token（スコープ: `repo`） |
 
 ### インストール
@@ -211,6 +215,7 @@ GitHubInstallPackage["pkg", "https://github.com/alice/repo"]
 | `Fallback` | `False` | `True` で API 制限時に代替モデルでの処理を有効化 |
 | `"DryRun"` | `True` | `PackageCommit` で実コミットせず計画とメッセージ案のみ返す |
 | `"SkipDocsGate"` | `False` | `PackageCommitPlan` / `PackageCommit` の DryRun 時のみドキュメント鮮度ゲートをスキップ（実コミットでは無効） |
+| `"MessageGenerator"` | `Automatic` | `PackageCommitPlan` / `PackageCommit` のコミットメッセージ生成方式（`Automatic` / 固定文字列 / diff を受け取る関数） |
 
 ### 主な機能
 
@@ -225,7 +230,7 @@ GitHubInstallPackage["pkg", "https://github.com/alice/repo"]
 
 - **`GitHubReadManifest[name]`** — `upload_manifest.json` を読む（不在時は自動生成、パッケージ種別変更時は自動更新）。`<<パッケージ名>>_*.wl` 形式の補助ファイルを自動検出して追加する（競合コピーや非公開コードは除外）
 - **`GitHubValidateManifest[name]`** — ファイルの実在確認・機密情報らしきファイルの混入チェック・非公開コード（`CodePrivacyLevel > 0`）の混入チェック・除外パターンの確認を行う。コミット・配布前の健全性チェック
-- **`GitHubRefreshLocalPackageGroup[name]`** — マニフェストに従いファイルをローカル作業フォルダへコピー。`_info/originals/` の書き戻し、削除ファイルのクリーンアップ、`_info/history/`・`_info/references/`・`_info/docs/docs/` の保護、`.md` の偽 front matter 除去、トップ README.md の相対リンク張り直しを行う。非公開コードが対象に含まれる場合は fail-closed で遮断する
+- **`GitHubRefreshLocalPackageGroup[name]`** — マニフェストに従いファイルをローカル作業フォルダへコピー。`_info/originals/` の書き戻し、削除ファイルのクリーンアップ、`_info/history/`・`_info/references/`・`_info/docs/docs/` の保護、`.md` の偽 front matter 除去、トップ README.md の相対リンク張り直し、`EnglishDocs` 設定に応じた `docs/en/` の公開制御を行う。非公開コードが対象に含まれる場合は fail-closed で遮断する
 - **`GitHubRefreshLocalPackage[name]`** — `.wl` 単体をローカルへコピー（後方互換用）
 
 #### 差分ベースの自動コミット（旧 PackageAutoCommit、github.wl に統合）
@@ -296,7 +301,7 @@ GitHubInstallPackage["pkg", "https://github.com/alice/repo"]
 | ファイル | 内容 |
 |---------|------|
 | `api.md` | 全関数・オプションのリファレンス |
-| `setup.md` | セットアップガイド（要件・インストール・API キー設定・自動コミット・外部フォルダ・トラブルシューティング） |
+| `setup.md` | セットアップガイド（要件・インストール・API キー設定・ディレクトリ構造・英語版 docs の公開可否・自動コミット・外部フォルダ・トラブルシューティング） |
 | `user_manual.md` | 各関数の詳細な使い方と引数説明 |
 | `examples/example.md` | 典型的なユースケースのコード例 |
 | `examples/autocommit.md` | 差分ベース自動コミット関数群（`PackageDocsFreshnessGate` / `PackageCommitDiff` / `PackageCommitPlan` / `PackageCommit` / `PackageCommitDeletionPreview` / `PackageLLMMessageGenerator`）の実行例集 |
