@@ -86,9 +86,9 @@ pull request を作成
 Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, Head -> Automatic (Automatic は Branch), BaseBranch -> Automatic, Body -> "", Draft -> False, MaintainerCanModify -> True, Fallback -> False
 
 ### GitHubRefreshAndCommit[packageName, message, opts]
-manifest に基づき対象ファイル群をローカルへコピーし GitHub へコミット。コピー時に `.md` ファイルの先頭偽 front matter `---` を自動除去。`_info/docs/README.md` 変更時はトップ README.md も自動更新する(相対リンクはルート基準へ自動張り直し)。CodePrivacyLevel > 0 のファイルが manifest 対象に含まれる場合はコピー・コミットとも行わず `Failure["PrivateCodeBlocked", ...]` を返す。コミット失敗時はローカルミラー(GithubRepositories/<pkg>)を refresh 前の状態へ自動ロールバックする(次回の差分計算が前回コミット基準からずれないように)
+manifest に基づき対象ファイル群をローカルへコピーし GitHub へコミット。コピー時に `.md` ファイルの先頭偽 front matter `---` を自動除去。`_info/docs/README.md` 変更時はトップ README.md も自動更新する(相対リンクはルート基準へ自動張り直し)。CodePrivacyLevel > 0 のファイルが manifest 対象に含まれる場合はコピー・コミットとも行わず `Failure["PrivateCodeBlocked", ...]` を返す。コミット失敗時はローカルミラー(GithubRepositories/<pkg>)を refresh 前の状態へ自動ロールバックする(次回の差分計算が前回コミット基準からずれないように)。コピー前に追加・変更された .wl を NBAccess`NBAuditPackageSource で検査し前回コミットより増えた検出を警告する(コミットは止めない、結果は戻り値の "PolicyLint")
 → Association | Failure
-Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, CreateBranch -> Automatic, LocalRepoPath -> Automatic, DeleteMissing -> False, Force -> False, Author -> Automatic, Committer -> Automatic, ExtraDirectories -> {}, Fallback -> False
+Options: Owner -> Automatic, Repository -> Automatic, Branch -> Automatic, BaseBranch -> Automatic, CreateBranch -> Automatic, LocalRepoPath -> Automatic, DeleteMissing -> False, Force -> False, Author -> Automatic, Committer -> Automatic, ExtraDirectories -> {}, "PolicyLint" -> True (False で NBAuditPackageSource 検査を省く), Fallback -> False
 
 ### GitHubSubmitPullRequest[packageName, title, message, opts]
 refresh → branch 作成 → commit → pull request 作成を一括実行
@@ -247,9 +247,9 @@ Options: "MessageGenerator" -> Automatic (Automatic は $PackageCommitModel で�
 → `<|Status, Package, Proceed, (StaleDocs | AckLossFiles | Diff | CommitMessage), ...|>`
 
 ### PackageCommit[packageName, opts] → Association
-メイン駆動関数。PackageCommitPlan 実行後、Status -> OK のとき GitHubRefreshAndCommit を呼ぶ。英語版 docs (`docs/en/`) は `<pkg>_info/references/doc_options.json` の `"EnglishDocs"` が true のときだけ公開する(ClaudeCreate/UpdateDocumentation の `"EnglishDocs"` オプションで記録)。記述なし/false なら en/ はコピーせず、リポジトリに残っている en/ は削除する。true で en/ が未作成/日本語版に未追従なら警告(コミットは止めない)
-→ `<|Status (DryRun|Committed|Blocked|NoChange|Failed), Committed, CommitMessage, EnglishDocs, ...|>`
-Options: "DryRun" -> True (既定。実コミットせず計画とメッセージ案を返す), "MessageGenerator" -> Automatic, "SkipDocsGate" -> False (True は DryRun プレビュー専用。実コミット (DryRun -> False) では SkipDocsGate に関わらず docs 古ければ Blocked で停止し StaleDocs を返す), "DeleteMissing" -> False (True で GitHubRefreshAndCommit へ転送しリモート残骸を削除。実行前に PackageCommitDeletionPreview で削除候補を必ず確認すること), "AllowAckRemoval" -> False (README の「## 謝辞」節が消えるコミットは既定で Blocked。意図的削除時のみ True)
+メイン駆動関数。PackageCommitPlan 実行後、Status -> OK のとき GitHubRefreshAndCommit を呼ぶ。英語版 docs (`docs/en/`) は `<pkg>_info/references/doc_options.json` の `"EnglishDocs"` が true のときだけ公開する(ClaudeCreate/UpdateDocumentation の `"EnglishDocs"` オプションで記録)。記述なし/false なら en/ はコピーせず、リポジトリに残っている en/ は削除する。true で en/ が未作成/日本語版に未追従なら警告(コミットは止めない)。追加・変更された .wl は NBAccess`NBAuditPackageSource で検査し前回コミット(ミラー)より増えた検出と未検査ファイルを警告する(コミットは止めない、結果は戻り値の "PolicyLint")
+→ `<|Status (DryRun|Committed|Blocked|NoChange|Failed), Committed, CommitMessage, EnglishDocs, PolicyLint, ...|>`
+Options: "DryRun" -> True (既定。実コミットせず計画とメッセージ案を返す), "MessageGenerator" -> Automatic, "SkipDocsGate" -> False (True は DryRun プレビュー専用。実コミット (DryRun -> False) では SkipDocsGate に関わらず docs 古ければ Blocked で停止し StaleDocs を返す), "DeleteMissing" -> False (True で GitHubRefreshAndCommit へ転送しリモート残骸を削除。実行前に PackageCommitDeletionPreview で削除候補を必ず確認すること), "AllowAckRemoval" -> False (README の「## 謝辞」節が消えるコミットは既定で Blocked。意図的削除時のみ True), "PolicyLintTimeBudget" -> 60 (NBAuditPackageSource 検査時間の上限秒数)
 例: PackageCommit["github", "DryRun" -> False, "MessageGenerator" -> PackageLLMMessageGenerator[$iModelSonnet]]
 
 ### PackageCommitDeletionPreview[packageName] → Association

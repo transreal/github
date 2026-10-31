@@ -85,7 +85,9 @@ GitHubCreatePullRequest::usage =
 GitHubRefreshAndCommit::usage =
   "GitHubRefreshAndCommit[packageName, message] は upload_manifest.json に基づき\n" <>
   "対象ファイル群をローカル GitHub 作業フォルダへコピーし、GitHub へコミットする。\n" <>
-  "_info/docs/README.md が変更されていればトップレベル README.md も自動更新する。";
+  "_info/docs/README.md が変更されていればトップレベル README.md も自動更新する。\n" <>
+  "コピーの前に、追加・変更された .wl を NBAccess`NBAuditPackageSource で検査し、前回コミットより増えた検出を\n" <>
+  "警告する (コミットは止めない。結果は戻り値の \"PolicyLint\")。\"PolicyLint\" -> False で検査を省く。";
 
 GitHubSubmitPullRequest::usage =
   "GitHubSubmitPullRequest[packageName, title, message] は\n" <>
@@ -393,7 +395,10 @@ PackageCommit::usage =
   "英語版 docs (docs/en/) は <pkg>_info/references/doc_options.json の \"EnglishDocs\" が true のときだけ公開する\n" <>
   "(ClaudeCreate/UpdateDocumentation の \"EnglishDocs\" オプションで記録)。記述なし/false なら en/ はコピーせず、\n" <>
   "リポジトリに残っている en/ は削除する。true で en/ が未作成/日本語版に未追従なら警告 (コミットは止めない)。\n" <>
-  "戻り値: <|Status (DryRun|Committed|Blocked|NoChange|Failed), Committed, CommitMessage, EnglishDocs, ...|>。";
+  "追加・変更された .wl は NBAccess`NBAuditPackageSource で検査し、前回コミット (ミラー) より増えた検出と\n" <>
+  "未検査のファイルを警告する (コミットは止めない)。結果は \"PolicyLint\" -> <|Status, New, NewErrors, NewReview,\n" <>
+  "Resolved, Counts, Unchecked, Files|>。\"PolicyLintTimeBudget\" -> 60 (秒) で検査時間の上限を決める。\n" <>
+  "戻り値: <|Status (DryRun|Committed|Blocked|NoChange|Failed), Committed, CommitMessage, EnglishDocs, PolicyLint, ...|>。";
 
 PackageLLMMessageGenerator::usage =
   "PackageLLMMessageGenerator[queryFn, opts] は LLM でコミットメッセージを生成する\n" <>
@@ -2674,17 +2679,27 @@ Options[GitHubRefreshAndCommit] = {
   Committer -> Automatic,
   ExtraDirectories -> {},
   Public -> False,
-  Fallback -> False
+  Fallback -> False,
+  (* ポリシー検査 (警告のみ)。PackageCommit 経由では計画段階で済ませているので False で呼ばれる *)
+  "PolicyLint" -> True
 };
 
 GitHubRefreshAndCommit[packageName_String, message_String, opts : OptionsPattern[]] :=
-  Module[{localDir, refreshResult, commitResult, commitOpts},
+  Module[{localDir, refreshResult, commitResult, commitOpts, lint},
     (* Fallback オプションを $currentUseFallback に反映 *)
     If[TrueQ[OptionValue[Fallback]],
       ClaudeCode`Private`$currentUseFallback = True];
     localDir = GitHubEnsureLocalRepo[packageName, LocalRepoPath -> OptionValue[LocalRepoPath]];
     (* ExtraDirectories が指定されていれば manifest に永続追加 *)
     iAddExtraDirectories[packageName, OptionValue[ExtraDirectories]];
+    (* ポリシー検査: ミラーを進める前 (= 前回コミットの状態と比べられるうち) に行う。警告のみ *)
+    lint = If[TrueQ[OptionValue["PolicyLint"]],
+      With[{diff = Quiet @ PackageCommitDiff[packageName]},
+        If[Lookup[diff, "Status", ""] === "OK",
+          iPACPolicyLint[packageName, diff, 60],
+          <|"Status" -> "Unavailable", "Reason" -> "PackageCommitDiff が失敗しました。"|>]],
+      Missing["Skipped"]];
+    If[AssociationQ[lint], iPACPolicyLintWarn[packageName, lint, GitHubRefreshAndCommit]];
     (* OptionValue は定義の RHS でのみ解決されるため、遅延評価される
        クロージャに入れる前にここで値を確定させる。 *)
     commitOpts = {
@@ -2715,7 +2730,8 @@ GitHubRefreshAndCommit[packageName_String, message_String, opts : OptionsPattern
     Join[
       <|
         "Action" -> "RefreshAndCommit",
-        "RefreshResult" -> refreshResult
+        "RefreshResult" -> refreshResult,
+        "PolicyLint" -> lint
       |>,
       commitResult
     ]
@@ -5054,10 +5070,10 @@ iPACAckLossFiles[diff_Association] := Module[
 ];
 
 Options[PackageCommitPlan] = {"MessageGenerator" -> Automatic, "SkipDocsGate" -> False,
-  "AllowAckRemoval" -> False};
+  "AllowAckRemoval" -> False, "PolicyLintTimeBudget" -> 60};
 
 PackageCommitPlan[pkg_String, OptionsPattern[]] := Module[
-  {gate, diff, msg, skipGate, gateProceed, staleWarn, ackLoss},
+  {gate, diff, msg, skipGate, gateProceed, staleWarn, ackLoss, lint},
   skipGate = TrueQ[OptionValue["SkipDocsGate"]];
   gate = PackageDocsFreshnessGate[pkg];
   If[Lookup[gate, "Status", ""] === "Failed",
@@ -5088,10 +5104,13 @@ PackageCommitPlan[pkg_String, OptionsPattern[]] := Module[
           ")。謝辞の削除は禁止。docs/README.md と doc_options.json の Acknowledgments を復元してください。" <>
           "意図的な削除の場合のみ \"AllowAckRemoval\" -> True を明示指定。",
         "AckLossFiles" -> ackLoss, "Diff" -> diff|>]]];
+  (* ポリシー検査 (警告のみ。Status には影響しない) *)
+  lint = iPACPolicyLint[pkg, diff, OptionValue["PolicyLintTimeBudget"]];
   msg = iPACResolveMessage[OptionValue["MessageGenerator"], diff];
   <|"Status" -> "OK", "Package" -> pkg, "Proceed" -> True,
     "StaleDocs" -> staleWarn, "DocsGateSkipped" -> (skipGate && ! gateProceed),
     "EnglishDocs" -> iPACEnglishDocsStatus[pkg],
+    "PolicyLint" -> lint,
     "Diff" -> diff, "CommitMessage" -> msg|>
 ];
 
@@ -5109,6 +5128,74 @@ iPACEnglishDocsStatus[pkg_String] := Module[
     missing = Quiet @ Check[ClaudeCode`Private`iDocEnMissingDocs[docsDir], {}]];
   <|"Enabled" -> enabled, "Missing" -> missing, "Stale" -> stale|>];
 
+(* ── パッケージソースのポリシー検査 (2026-10-31、再設計 Phase 3: コミット時の警告。止めない) ──
+   コミット対象のうち追加・変更された .wl/.m を NBAccess`NBAuditPackageSource で検査し、
+   ミラー (= 前回コミットの状態) の同じファイルの検査結果と比べて、このコミットで増えた検出を返す。
+   照合は ファイル・規則 ID・定義名・コード (空白を詰めたもの) で行い、行番号は使わない
+   (前に行が増えただけで「増えた」と数えないため)。
+   設計: ドキュメント/NBAccess_policy_lint_redesign_proposal_v0_1.md *)
+iPACReadText[path_String] := Module[{b = Quiet @ Check[ReadByteArray[path], $Failed]},
+  If[ByteArrayQ[b], Quiet @ Check[ByteArrayToString[b, "UTF-8"], ""], ""]];
+
+iPACLintKey[f_Association] := StringRiffle[{Lookup[f, "File", ""], Lookup[f, "RuleID", ""],
+  Lookup[f, "Definition", ""],
+  StringReplace[StringTrim[Lookup[f, "Code", ""]], WhitespaceCharacter .. -> " "]}, "\n"];
+
+(* a のうち b に無いもの (同じキーが複数あれば個数で差し引く) *)
+iPACMultisetMinus[a_List, b_List] := Module[{cnt = Counts[iPACLintKey /@ b]},
+  Select[a, Function[x, With[{k = iPACLintKey[x]},
+    If[Lookup[cnt, k, 0] > 0, cnt[k] = cnt[k] - 1; False, True]]]]];
+
+iPACPolicyLint[pkg_String, diff_Association, budget_] := Module[{det, cur, curOpen, prev, newF},
+  If[Length[DownValues[NBAccess`NBAuditPackageSource]] === 0,
+    Return[<|"Status" -> "Unavailable",
+      "Reason" -> "NBAccess`NBAuditPackageSource が読み込まれていません。"|>, Module]];
+  det = Select[Replace[Lookup[diff, "ChangedDetail", {}], Except[_List] -> {}],
+    AssociationQ[#] && MemberQ[{"wl", "m"}, ToLowerCase[FileExtension[Lookup[#, "Src", ""]]]] &&
+      FileExistsQ[Lookup[#, "Src", ""]] &];
+  If[det === {},
+    Return[<|"Status" -> "OK", "Files" -> {}, "Counts" -> <||>, "New" -> {}, "NewErrors" -> 0,
+      "NewReview" -> 0, "Resolved" -> 0, "Unchecked" -> {}|>, Module]];
+  cur = Quiet @ NBAccess`NBAuditPackageSource[Lookup[det, "Src"], "TimeBudget" -> budget];
+  If[! AssociationQ[cur],
+    Return[<|"Status" -> "Unavailable", "Reason" -> ToString[cur]|>, Module]];
+  curOpen = Select[cur["Findings"], #Waived === False &];
+  (* 前回コミット時点のファイルを、現在と同じ名前 (ゲートウェイ判定とキーをそろえる) で検査する *)
+  prev = Flatten[Map[Function[d,
+      If[FileExistsQ[Lookup[d, "Snap", ""]],
+        With[{r = Quiet @ NBAccess`NBAuditPackageSourceText[iPACReadText[d["Snap"]], d["Src"]]},
+          If[AssociationQ[r], Select[r["Findings"], #Waived === False &], {}]],
+        {}]], det], 1];
+  newF = iPACMultisetMinus[curOpen, prev];
+  <|"Status" -> Which[
+      cur["Coverage"]["Failed"] =!= {}, "Incomplete",
+      AnyTrue[newF, #Severity === "Error" &], "NewErrors",
+      newF =!= {}, "NewReview",
+      True, "OK"],
+    "Files" -> Lookup[det, "Rel"],
+    "Counts" -> cur["Counts"],
+    "New" -> newF,
+    "NewErrors" -> Count[newF, f_ /; f["Severity"] === "Error"],
+    "NewReview" -> Count[newF, f_ /; f["Severity"] === "Review"],
+    "Resolved" -> Length[iPACMultisetMinus[prev, curOpen]],
+    "Unchecked" -> cur["Coverage"]["Failed"],
+    "Seconds" -> cur["Seconds"]|>];
+
+(* 警告を出すだけ (コミットは止めない)。head は PackageCommit か GitHubRefreshAndCommit *)
+iPACPolicyLintWarn[pkg_String, lint_Association, head_Symbol] := Module[{newF = Lookup[lint, "New", {}]},
+  If[Lookup[lint, "Status", ""] === "Unavailable",
+    Message[MessageName[head, "policylintna"], pkg, ToString[Lookup[lint, "Reason", ""]]]];
+  If[newF =!= {},
+    Message[MessageName[head, "policylint"], pkg, Lookup[lint, "NewErrors", 0],
+      Lookup[lint, "NewReview", 0], Lookup[lint, "Resolved", 0],
+      StringRiffle[(#FileName <> ":L" <> ToString[#Line] <> " " <> #RuleID) & /@ Take[newF, UpTo[3]], ", "]]];
+  If[Lookup[lint, "Unchecked", {}] =!= {},
+    Message[MessageName[head, "policylintunchecked"], pkg,
+      StringRiffle[DeleteDuplicates[
+        (FileNameTake[Lookup[#, "File", ""]] <> " (" <> ToString[Lookup[#, "Reason", ""]] <> ")") & /@
+          lint["Unchecked"]], ", "]]]];
+iPACPolicyLintWarn[___] := Null;
+
 PackageCommitPlan[___] :=
   <|"Status" -> "Failed",
     "Reason" -> "PackageCommitPlan[packageName_String, opts] を期待。"|>;
@@ -5120,6 +5207,18 @@ PackageCommit::staledocs =
 PackageCommit::englishdocs =
   "`1` の英語版 docs (en/) が日本語版に追従していません (未作成: `2` / 古い: `3`)。" <>
   "ClaudeUpdateDocumentation[\"`1`\"] で英訳を追従してからコミットすることを推奨します (コミットは止めません)。";
+
+PackageCommit::policylint =
+  "`1`: このコミットでポリシー検査の検出が増えます — Error `2` 件・要確認 `3` 件 (解消 `4` 件)。例: `5`。" <>
+  "詳細は戻り値の \"PolicyLint\" か ClaudeSeparationView[\"`1`\"] で確認してください (コミットは止めません)。";
+PackageCommit::policylintunchecked =
+  "`1`: ポリシー検査を完了できなかったファイルがあります (`2`)。未検査のファイルを「問題なし」とはみなしません (コミットは止めません)。";
+PackageCommit::policylintna =
+  "`1`: ポリシー検査を実行できませんでした (`2`)。コミットは続けます。";
+(* GitHubRefreshAndCommit を直接呼んだときも同じ文面で警告する *)
+GitHubRefreshAndCommit::policylint = PackageCommit::policylint;
+GitHubRefreshAndCommit::policylintunchecked = PackageCommit::policylintunchecked;
+GitHubRefreshAndCommit::policylintna = PackageCommit::policylintna;
 
 PackageCommit::ackloss =
   "`1` のコミットで README の「## 謝辞」節が失われるため停止しました (`2`)。" <>
@@ -5150,7 +5249,9 @@ Options[PackageCommit] = {"DryRun" -> True, "MessageGenerator" -> Automatic,
      PackageCommitDeletionPreview[pkg] で削除候補を必ず確認すること。
      除外パターン保護されたミラー内ファイル (docs/docs 等) は先にミラーから
      手動削除しないとツリーに残り続けて削除されない点に注意。 *)
-  "DeleteMissing" -> False};
+  "DeleteMissing" -> False,
+  (* ポリシー検査 (警告のみ) の時間上限 (秒)。超えたファイルは「未検査」と警告する *)
+  "PolicyLintTimeBudget" -> 60};
 
 PackageCommit[pkg_String, OptionsPattern[]] := Module[
   {dry, skipGate, plan, res},
@@ -5160,7 +5261,8 @@ PackageCommit[pkg_String, OptionsPattern[]] := Module[
      SkipDocsGate に関わらず docs 鮮度ゲートを必ず適用する。 *)
   plan = PackageCommitPlan[pkg, "MessageGenerator" -> OptionValue["MessageGenerator"],
     "SkipDocsGate" -> (skipGate && dry),
-    "AllowAckRemoval" -> TrueQ[OptionValue["AllowAckRemoval"]]];
+    "AllowAckRemoval" -> TrueQ[OptionValue["AllowAckRemoval"]],
+    "PolicyLintTimeBudget" -> OptionValue["PolicyLintTimeBudget"]];
   (* OK 以外 (Blocked / NoChange / Failed) はコミットしない *)
   If[Lookup[plan, "Status", ""] =!= "OK",
     Module[{st = Lookup[plan, "Status", ""], stale = Lookup[plan, "StaleDocs", {}]},
@@ -5192,20 +5294,25 @@ PackageCommit[pkg_String, OptionsPattern[]] := Module[
       Message[PackageCommit::englishdocs, pkg,
         StringRiffle[Lookup[en, "Missing", {}], ", "] /. "" -> "なし",
         StringRiffle[Lookup[en, "Stale", {}], ", "] /. "" -> "なし"]]];
+  (* ポリシー検査で増えた検出・未検査があれば警告 (止めない) *)
+  iPACPolicyLintWarn[pkg, Lookup[plan, "PolicyLint", <||>], PackageCommit];
   If[dry,
     Return[<|"Status" -> "DryRun", "Package" -> pkg, "Committed" -> False,
       "CommitMessage" -> plan["CommitMessage"], "Diff" -> plan["Diff"],
       "DocsGateSkipped" -> Lookup[plan, "DocsGateSkipped", False],
       "StaleDocs" -> Lookup[plan, "StaleDocs", {}],
       "EnglishDocs" -> Lookup[plan, "EnglishDocs", <||>],
+      "PolicyLint" -> Lookup[plan, "PolicyLint", Missing["NotRun"]],
       "Note" -> "DryRun -> False で実コミット (GitHubRefreshAndCommit) を実行。"|>]];
+  (* 計画段階で検査済みなので、GitHubRefreshAndCommit 側の検査は省く *)
   res = GitHubRefreshAndCommit[pkg, plan["CommitMessage"],
-    DeleteMissing -> TrueQ[OptionValue["DeleteMissing"]]];
+    DeleteMissing -> TrueQ[OptionValue["DeleteMissing"]], "PolicyLint" -> False];
   <|"Status" -> If[FailureQ[res], "Failed", "Committed"], "Package" -> pkg,
     "Committed" -> ! FailureQ[res], "CommitMessage" -> plan["CommitMessage"],
     "DocsGateSkipped" -> Lookup[plan, "DocsGateSkipped", False],
     "StaleDocs" -> Lookup[plan, "StaleDocs", {}],
     "EnglishDocs" -> Lookup[plan, "EnglishDocs", <||>],
+    "PolicyLint" -> Lookup[plan, "PolicyLint", Missing["NotRun"]],
     "Result" -> res|>
 ];
 
