@@ -479,7 +479,9 @@ ClearAll[
   iNormalizeFolderPath, iFolderExcludedQ, iExcludedSummaryPath,
   iFolderCommitFileSet, iRepoPrivateQ, iRepoVisibility, iExternalPublicGuard,
   iFolderPrivateCodeFiles, iPrivateCodeBlockedFailure, iFolderSuspectSecretPaths,
-  iFolderRepoName, iFolderCheck, iFolderPlan
+  iFolderRepoName, iFolderCheck, iFolderPlan,
+  iPrivatePathQ, iDirectiveRootQ, iDirectiveLintAvailableQ, iEnsureDirectiveLint,
+  iDirectiveLintViolations, iDirectivePrivacyViolations, iDirectivePrivacyBlockedFailure
 ];
 
 iFailure[tag_String, msg_String, data_: <||>] :=
@@ -1949,7 +1951,79 @@ iPrivateCodeViolations[packageName_String] := Module[
           excludePatterns] &]]],
     dirs];
   cands = Join[files, dirCands];
-  Select[DeleteDuplicates[cands], iCodePrivacyLevel[#] > 0 &]];
+  Select[DeleteDuplicates[cands], iCodePrivacyLevel[#] > 0 || iPrivatePathQ[pkgDir, #] &]];
+
+(* ============================================================
+   Directive privacy gate (2026-11-07)
+   Spec: claude_directives_privacy_spec_v1_0.md (local). Two extra checks:
+   (1) "<name>_private" is the local-only convention (files <pkg>_private.wl,
+       directories like "Claude Directives_private", "pdfindex_private").
+       Anything on such a path is never published, stamp or not.
+   (2) A directive root in the manifest (a directory with rules/, skills/ or
+       CLAUDE.md) must pass ClaudeDirectives`ClaudeDirectivesPrivacyLint
+       (PL 0.0 only). If the lint cannot be loaded the commit is blocked
+       (fail-closed). Lint hits never contain the matched text.
+   ============================================================ *)
+iPrivatePathQ[base_String, path_String] := Module[{b, p, rel},
+  b = FileNameSplit[ExpandFileName[base]];
+  p = FileNameSplit[ExpandFileName[path]];
+  rel = If[Length[p] > Length[b] && ToLowerCase[Take[p, Length[b]]] === ToLowerCase[b],
+    Drop[p, Length[b]], p];
+  rel =!= {} && (
+    AnyTrue[Most[rel], StringEndsQ[ToLowerCase[#], "_private"] &] ||
+    StringEndsQ[ToLowerCase[FileBaseName[Last[rel]]], "_private"])];
+iPrivatePathQ[_, _] := False;
+
+iDirectiveRootQ[dir_String] :=
+  DirectoryQ[dir] && (DirectoryQ[FileNameJoin[{dir, "rules"}]] ||
+    DirectoryQ[FileNameJoin[{dir, "skills"}]] ||
+    FileExistsQ[FileNameJoin[{dir, "CLAUDE.md"}]]);
+iDirectiveRootQ[_] := False;
+
+iDirectiveLintAvailableQ[] :=
+  Length[Names["ClaudeDirectives`ClaudeDirectivesPrivacyLint"]] > 0 &&
+    TrueQ[ToExpression["ClaudeDirectives`ClaudeDirectivesPrivacyLint", InputForm,
+      Function[s, Length[DownValues[s]] > 0, HoldAll]]];
+
+iEnsureDirectiveLint[] := Module[{f},
+  If[TrueQ[iDirectiveLintAvailableQ[]], Return[True]];
+  f = FileNameJoin[{iPackageDirectory[], "claudecode_directives.wl"}];
+  If[FileExistsQ[f],
+    Quiet @ Check[Block[{$CharacterEncoding = "UTF-8"}, Get[f]], Null]];
+  TrueQ[iDirectiveLintAvailableQ[]]];
+
+(* lint results of the directive roots among dirs (absolute paths); {} = clean *)
+iDirectiveLintViolations[dirs_List] := Module[{roots},
+  roots = Select[dirs, iDirectiveRootQ];
+  If[roots === {}, Return[{}]];
+  If[! iEnsureDirectiveLint[],
+    Return[<|"Dir" -> FileNameTake[#], "Status" -> "LintUnavailable"|> & /@ roots]];
+  Select[
+    Map[Function[d, Module[{r},
+      r = Quiet @ Check[
+        ToExpression["ClaudeDirectives`ClaudeDirectivesPrivacyLint"][d], $Failed];
+      Which[
+        ! AssociationQ[r], <|"Dir" -> FileNameTake[d], "Status" -> "LintFailed"|>,
+        Lookup[r, "Status", ""] === "Clean", Nothing,
+        True, <|"Dir" -> FileNameTake[d], "Status" -> Lookup[r, "Status", "Violations"],
+          "MaxLevel" -> Lookup[r, "MaxLevel", Missing[]],
+          "Hits" -> Take[Lookup[r, "Hits", {}], UpTo[50]],
+          "HitCount" -> Length[Lookup[r, "Hits", {}]]|>]]],
+      roots],
+    AssociationQ]];
+
+iDirectivePrivacyViolations[packageName_String] := Module[{manifest, pkgDir, dirs},
+  manifest = Quiet @ Check[iEnsureManifest[packageName], $Failed];
+  If[! AssociationQ[manifest], Return[{}]];
+  pkgDir = iPackageDirectory[];
+  dirs = Select[FileNameJoin[{pkgDir, #}] & /@ Lookup[manifest, "directories", {}], DirectoryQ];
+  iDirectiveLintViolations[dirs]];
+
+iDirectivePrivacyBlockedFailure[where_, details_List] :=
+  Failure["DirectivePrivacyBlocked", <|
+    "MessageTemplate" ->
+      "Claude Directives に PrivacyLevel 0.0 を超える内容があるため公開リポジトリへコミットできません。ClaudeDirectivesPrivacyLint の Hits (File/Line/Rule) を一般化するか、私的ノート (<root>_private/notes) へ移して sv://directive で引用してください。",
+    "Where" -> where, "Details" -> details|>];
 
 iRefreshPackageGroup[packageName_String, localDir_String] :=
   Module[{manifest, pkgDir, copiedFiles = {}, copiedDirs = {}, excludePatterns,
@@ -1964,6 +2038,10 @@ iRefreshPackageGroup[packageName_String, localDir_String] :=
           "CodePrivacyLevel > 0 の非公開ファイルが manifest 対象に含まれています。upload_manifest.json から外してください。",
         "PackageName" -> packageName,
         "Files" -> Map[FileNameTake, privateHits]|>]]];
+    (* 関所 2 (2026-11-07): directive ルートは lint で PL 0.0 を確認できたときだけ反映 *)
+    With[{dirViol = iDirectivePrivacyViolations[packageName]},
+      If[dirViol =!= {},
+        Return[iDirectivePrivacyBlockedFailure[packageName, dirViol]]]];
     manifest = iEnsureManifest[packageName];
     pkgDir = iPackageDirectory[];
     excludePatterns = iMergedExcludePatterns[packageName];
@@ -2050,7 +2128,7 @@ GitHubPackageURL[packageName_String, opts:OptionsPattern[]] :=
     If[FailureQ[owner], Return[$Failed]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode`Private`$currentUseFallback = True];
+      ClaudeCode`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     iRepositoryURL[owner, repo]
@@ -2146,6 +2224,11 @@ GitHubValidateManifest[packageName_String] := Module[
       AppendTo[issues, <|"Issue" -> "PrivateCodeFiles",
         "Files" -> Map[FileNameTake, privHits],
         "Hint" -> "CodePrivacyLevel > 0。upload_manifest.json から外すこと"|>]]];
+  Module[{dirViol = iDirectivePrivacyViolations[packageName]},
+    If[dirViol =!= {},
+      AppendTo[issues, <|"Issue" -> "DirectivePrivacy",
+        "Details" -> dirViol,
+        "Hint" -> "ClaudeDirectivesPrivacyLint の Hits を一般化するか私的ノートへ移す"|>]]];
   <|
     "Status" -> If[issues === {}, "OK", "Issues"],
     "PackageName" -> packageName,
@@ -2190,12 +2273,12 @@ GitHubCreateRepository[packageName_String, opts : OptionsPattern[]] :=
           defaultBranch, refResp, commitResult},
     (* Fallback オプションを $currentUseFallback に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode`Private`$currentUseFallback = True];
+      ClaudeCode`$currentUseFallback = True];
     token = iAccessToken[];
     If[FailureQ[token], Return[token]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode`Private`$currentUseFallback = True];
+      ClaudeCode`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     resp = iAPICall[
@@ -2278,7 +2361,7 @@ GitHubReadFile[packageName_String, path_String, opts : OptionsPattern[]] :=
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode`Private`$currentUseFallback = True];
+      ClaudeCode`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     baseBranch = iResolveBaseBranch[token, owner, repo, OptionValue[BaseBranch]];
@@ -2345,7 +2428,7 @@ GitHubPull[packageName_String, opts : OptionsPattern[]] :=
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode`Private`$currentUseFallback = True];
+      ClaudeCode`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     baseBranch = iResolveBaseBranch[token, owner, repo, OptionValue[BaseBranch]];
@@ -2428,14 +2511,14 @@ GitHubCommit[packageName_String, message_String, opts : OptionsPattern[]] :=
           includePackageResult, externalQ, guard, folderSet = None, privHits},
     (* Fallback オプションを $currentUseFallback に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode`Private`$currentUseFallback = True];
+      ClaudeCode`$currentUseFallback = True];
     token = iAccessToken[];
     If[FailureQ[token], Return[token]];
     owner = iResolveOwner[token, OptionValue[Owner], packageName];
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode`Private`$currentUseFallback = True];
+      ClaudeCode`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     repoInfo = iWaitForRepoInfo[token, owner, repo];
@@ -2467,7 +2550,9 @@ GitHubCommit[packageName_String, message_String, opts : OptionsPattern[]] :=
       folderSet = iFolderCommitFileSet[localDir, OptionValue["ExcludePatterns"]];
       If[!iRepoPrivateQ[repoInfo["Body"]],
         privHits = iFolderPrivateCodeFiles[folderSet["Files"]];
-        If[privHits =!= {}, Return[iPrivateCodeBlockedFailure[localDir, privHits]]]
+        If[privHits =!= {}, Return[iPrivateCodeBlockedFailure[localDir, privHits]]];
+        With[{dv = iDirectiveLintViolations[{localDir}]},
+          If[dv =!= {}, Return[iDirectivePrivacyBlockedFailure[localDir, dv]]]]
       ]
     ];
     ref = If[TrueQ[createBranchQ],
@@ -2624,7 +2709,7 @@ GitHubCreatePullRequest[packageName_String, title_String, opts : OptionsPattern[
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode`Private`$currentUseFallback = True];
+      ClaudeCode`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     base = iResolveBaseBranch[token, owner, repo, OptionValue[BaseBranch]];
@@ -2688,7 +2773,7 @@ GitHubRefreshAndCommit[packageName_String, message_String, opts : OptionsPattern
   Module[{localDir, refreshResult, commitResult, commitOpts, lint},
     (* Fallback オプションを $currentUseFallback に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode`Private`$currentUseFallback = True];
+      ClaudeCode`$currentUseFallback = True];
     localDir = GitHubEnsureLocalRepo[packageName, LocalRepoPath -> OptionValue[LocalRepoPath]];
     (* ExtraDirectories が指定されていれば manifest に永続追加 *)
     iAddExtraDirectories[packageName, OptionValue[ExtraDirectories]];
@@ -2941,8 +3026,10 @@ iExternalPublicGuard[body_, allowPublic_, owner_String, repo_String, dir_String]
 (* 公開リポジトリへ送るときの非公開コード関所 (manifest 経路と同じ拡張子) *)
 iFolderPrivateCodeFiles[files_List] :=
   Select[files,
-    MemberQ[{"wl", "m", "wls", "md", "txt"}, ToLowerCase[FileExtension[#]]] &&
-      iCodePrivacyLevel[#] > 0 &];
+    (MemberQ[{"wl", "m", "wls", "md", "txt"}, ToLowerCase[FileExtension[#]]] &&
+      iCodePrivacyLevel[#] > 0) ||
+    (* 2026-11-07: *_private names are local-only by convention *)
+    AnyTrue[FileNameSplit[#], StringEndsQ[ToLowerCase[FileBaseName[#]], "_private"] &] &];
 
 iPrivateCodeBlockedFailure[dir_String, hits_List] :=
   iFailure["PrivateCodeBlocked",
@@ -3084,7 +3171,9 @@ iFolderPlan[dir_, o_Association] :=
     count = Length[added] + Length[changed] + If[deleteMissing, Length[removed], 0];
     If[!privateQ,
       privHits = iFolderPrivateCodeFiles[set["Files"]];
-      If[privHits =!= {}, Return[iPrivateCodeBlockedFailure[abs, privHits]]]];
+      If[privHits =!= {}, Return[iPrivateCodeBlockedFailure[abs, privHits]]];
+      With[{dv = iDirectiveLintViolations[{abs}]},
+        If[dv =!= {}, Return[iDirectivePrivacyBlockedFailure[abs, dv]]]]];
     secretHits = iFolderSuspectSecretPaths[set["Paths"]];
     <|
       "Status" -> If[count == 0 && !willCreate, "NoChange", "Ready"],
@@ -3355,7 +3444,7 @@ iTranslateToEnglishRepoName[packageName_String] :=
   Module[{queryFn, queryWithFbFn, prompt, result, lines, candidates, useFallback},
     (* Fallback は $currentUseFallback が明示的に True の場合のみ有効。
        それ以外では Claude Code のエラーをそのまま伝播して処理を停止させる。 *)
-    useFallback = TrueQ[ClaudeCode`Private`$currentUseFallback];
+    useFallback = TrueQ[ClaudeCode`$currentUseFallback];
     queryWithFbFn = Quiet @ Check[ClaudeCode`Private`iQueryWithFallback, $Failed];
     queryFn = Quiet @ Check[ClaudeCode`Private`iClaudeQueryRaw, $Failed];
     If[(queryWithFbFn === $Failed || !MatchQ[queryWithFbFn, _Symbol]) &&
@@ -3565,7 +3654,7 @@ GitHubInstallPackage[packageName_String, opts:OptionsPattern[]] :=
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode`Private`$currentUseFallback = True];
+      ClaudeCode`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     (* 明示的に Repository が指定された場合も repo_database に登録 *)
@@ -3753,7 +3842,7 @@ GitHubListPullRequests[packageName_String, opts:OptionsPattern[]] :=
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode`Private`$currentUseFallback = True];
+      ClaudeCode`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     resp = iAPICall["GET",
@@ -3883,7 +3972,7 @@ GitHubMergePullRequest[packageName_String, prNumber_Integer, reason_String:"",
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode`Private`$currentUseFallback = True];
+      ClaudeCode`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     (* コメントとして理由を残す *)
@@ -3914,7 +4003,7 @@ GitHubClosePullRequest[packageName_String, prNumber_Integer, reason_String:"",
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode`Private`$currentUseFallback = True];
+      ClaudeCode`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     If[StringLength[reason] > 0,
@@ -3950,7 +4039,7 @@ GitHubReviewPullRequest[packageName_String, prNumber_Integer, opts:OptionsPatter
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode`Private`$currentUseFallback = True];
+      ClaudeCode`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     (* PR 情報取得 *)
@@ -4034,7 +4123,7 @@ GitHubListCommits[packageName_String, opts:OptionsPattern[]] :=
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode`Private`$currentUseFallback = True];
+      ClaudeCode`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     baseBranch = iResolveBaseBranch[token, owner, repo, OptionValue[BaseBranch]];
@@ -4107,7 +4196,7 @@ GitHubCommitLog[packageName_String, opts:OptionsPattern[]] :=
     owner = iResolveOwner[token, OptionValue[Owner], packageName];
     If[FailureQ[owner], Return[owner]];
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode`Private`$currentUseFallback = True];
+      ClaudeCode`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     baseBranch = iResolveBaseBranch[token, owner, repo,
@@ -4545,7 +4634,7 @@ iGitHubPullAtCommit[packageName_String, commitSHA_String, opts:OptionsPattern[]]
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode`Private`$currentUseFallback = True];
+      ClaudeCode`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     localDir = GitHubEnsureLocalRepo[packageName, LocalRepoPath -> OptionValue[LocalRepoPath]];
@@ -4617,7 +4706,7 @@ GitHubReviewCommit[packageName_String, commitSHA_String, opts:OptionsPattern[]] 
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode`Private`$currentUseFallback = True];
+      ClaudeCode`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     (* commits API \:306f\:30d5\:30a1\:30a4\:30eb\:5dee\:5206\:3082\:542b\:3080 *)
@@ -4699,7 +4788,7 @@ GitHubRevertCommit[packageName_String, commitSHA_String, reason_String:"",
     If[FailureQ[owner], Return[owner]];
     (* Fallback オプションを  に反映 *)
     If[TrueQ[OptionValue[Fallback]],
-      ClaudeCode`Private`$currentUseFallback = True];
+      ClaudeCode`$currentUseFallback = True];
     repo = iResolveRepository[packageName, OptionValue[Repository]];
     If[FailureQ[repo], Return[repo]];
     baseBranch = iResolveBaseBranch[token, owner, repo, OptionValue[BaseBranch]];

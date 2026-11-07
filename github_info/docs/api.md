@@ -6,6 +6,10 @@ NBAccess.wl と claudecode.wl と連携する GitHub REST ヘルパー。認証�
 
 非公開コード関所: ファイル先頭付近(4096バイト以内)の機械可読マーカー `(* :CodePrivacyLevel: 0.1 *)`(.md は `<!-- :CodePrivacyLevel: x -->`)で「ソースコード自体が非公開」を宣言できる(0 または無印 = 公開可)。manifest 対象(files + directories 配下の .wl/.m/.wls/.md/.txt)に CodePrivacyLevel > 0 のファイルが含まれると、GitHubRefreshLocalPackageGroup / GitHubRefreshAndCommit / GitHubCreateRepository の内部リフレッシュ処理は何もコピーせず `Failure["PrivateCodeBlocked", ...]` を返し fail-closed で遮断する(部分反映を作らない)。GitHubValidateManifest でも同じ違反を事前検出できる。外部フォルダ経路(GitHubCommit の外部 LocalRepoPath / GitHubFolder*)でも、公開を許した場合は同じ関所を通る。
 
+`_private` 規約と directive の関所 (2026-11-07): 名前が `_private` で終わるファイル (`<pkg>_private.wl` 等) と、`_private` で終わるディレクトリ配下のファイルは、スタンプの有無にかかわらず公開しない (`PrivateCodeBlocked` と同じ扱い)。manifest の directories に Claude Directives 形式のルート (`rules/`・`skills/`・`CLAUDE.md` のいずれかを持つディレクトリ) が含まれる場合は `ClaudeDirectives`ClaudeDirectivesPrivacyLint` を掛け、PrivacyLevel 0.0 を超える記述があれば何もコピーせず `Failure["DirectivePrivacyBlocked", <|"Where", "Details"|>]` を返す。lint 関数が読み込まれていなければ `$packageDirectory/claudecode_directives.wl` を読み込み、それでも使えなければ遮断する (fail-closed)。Details の Hits は一致した文字列を含まない。公開を許した外部フォルダ経路で、フォルダ自体が directive ルートの場合も同じ lint を通る。
+
+claudecode 連携の注記 (2026-11-06): API 呼び出しが既定の経路を使えず fallback した場合に立てるフラグは公開文脈の `ClaudeCode`$currentUseFallback` を参照する (以前は空の `ClaudeCode`Private`` 側を参照しており、フラグが claudecode 側へ伝わっていなかった)。
+
 外部フォルダ規則: `GithubRepositories/<pkg>` 配下以外の LocalRepoPath/dir(`$packageDirectory` 直下やその他のサブフォルダ含む)は「外部フォルダ」。外部フォルダのコミットは既定で private リポジトリにのみ許可。公開リポジトリへは `Public -> True` を明示したときだけ(True 以外は不許可、可視性が読めない応答も private と見なさず fail-closed)。関所は GitHubCommit 本体にあるため、LocalRepoPath を直接渡す呼び方でも同じ判定を通る。外部フォルダでは `.git/ .svn/ .hg/ desktop.ini Thumbs.db .DS_Store ~$*` と同期競合コピーを常に除外。`.gitignore` は解釈しない(`"ExcludePatterns"` で指定)。
 
 Markdown 先頭 `---` ガード: ミラーリフレッシュ時、すべての `.md` ファイルに対し先頭の独立した `---` 行(YAML front matter でないもの)を自動除去する。GitHub はこれを front matter としてパースし本文全体が消えるため。閉じ `---` と `key: value` 行を持つ本物の front matter(Claude Directives の rules/*.md / SKILL.md など)はそのまま通過する。
@@ -46,10 +50,10 @@ upload_manifest.json を読む。無ければ自動生成しディスク保存�
 ### GitHubValidateManifest[packageName] → Association
 配布前検査。files の実在、secret/token/credential/.pid/.heartbeat/.log らしきファイル混入、除外パターン、非公開コード(CodePrivacyLevel > 0)混入を確認
 → `<|Status ("OK"|"Issues"|"Error"), PackageName, FileCount, PresentFileCount, MissingFiles, Directories, ExcludePatterns, Issues|>`
-Issues の Issue 種別: "MissingFiles", "SuspectSecretFiles", "PrivateCodeFiles"(CodePrivacyLevel > 0。upload_manifest.json から外すこと)
+Issues の Issue 種別: "MissingFiles", "SuspectSecretFiles", "PrivateCodeFiles"(CodePrivacyLevel > 0 または `_private` 規約のパス。upload_manifest.json から外すこと), "DirectivePrivacy"(directive ルートの lint 違反・lint 不能。Details に lint 結果)
 
 ### GitHubRefreshLocalPackageGroup[packageName, opts]
-manifest に基づき対象ファイル・ディレクトリをローカル作業フォルダへコピー。`_info/docs/README.md` をトップ README.md として配置し、その際ルート用コピーの相対リンクには `<packageName>_info/docs/` を前置してルート基準に張り直す(張り直し先がミラーに実在する場合のみ; `docs/README.md` 本体は変更しない)。コピー後すべての `.md` ファイルの先頭偽 front matter `---` を自動除去(本物の front matter は保持)。CodePrivacyLevel > 0 のファイルが manifest 対象に含まれる場合は何もコピーせず `Failure["PrivateCodeBlocked", ...]` を返す
+manifest に基づき対象ファイル・ディレクトリをローカル作業フォルダへコピー。`_info/docs/README.md` をトップ README.md として配置し、その際ルート用コピーの相対リンクには `<packageName>_info/docs/` を前置してルート基準に張り直す(張り直し先がミラーに実在する場合のみ; `docs/README.md` 本体は変更しない)。コピー後すべての `.md` ファイルの先頭偽 front matter `---` を自動除去(本物の front matter は保持)。CodePrivacyLevel > 0 のファイル (または `_private` 規約のパス) が manifest 対象に含まれる場合は何もコピーせず `Failure["PrivateCodeBlocked", ...]` を、directive ルートが lint に通らない場合は `Failure["DirectivePrivacyBlocked", ...]` を返す
 → Association(リフレッシュ結果) | Failure
 Options: LocalRepoPath -> Automatic
 
