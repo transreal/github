@@ -241,6 +241,10 @@ GitHubRefreshAndCommit の前段。docs 鮮度ゲート → 前回コミット�
 `<pkg>_info/docs` 配下の api.md / api_*.md が対応 .wl 以降に更新されているか検査。対応規則: api.md↔`<pkg>.wl`、api_<sfx>.md↔`<pkg>_<sfx>.wl`。補助ソース(.wl)の内容ハッシュが `.aux_source_hashes.json` に記録済みの場合は内容基準で判定(Dropbox 同期等による mtime 揺れを無視)し、未記録時のみ mtime にフォールバック。1つでも古ければ Proceed -> False。docs フォルダが無ければ Status -> "NoDocs" で Proceed -> True。対応 .wl が無い api ドキュメントは検査対象外
 → `<|Status ("OK"|"NoDocs"|"Failed"), Package, Proceed, Checked, StaleDocs (各 <|Doc,Wl,DocDate,WlDate|>), DocsDir|>`
 
+### PackageDocsMarkCurrent[packageName] / PackageDocsMarkCurrent[packageName, doc | {doc, ...}] → Association
+手で直した api ドキュメントを、いまの対応 .wl の内容で最新として `.aux_source_hashes.json` に記録する (api.md → `"@main"`、api_<aux>.md → auxName。claudecode の記録と同じ形式)。鮮度は内容ハッシュ基準なので、`ClaudeCode`$ClaudeDocApiMaxBytes` (既定 128000) を超えて自動では再生成できない api ドキュメントは、手で直しても記録しない限り古いままで、PackageCommitPlan も Blocked のまま。doc 省略時は古いものだけ、指定時はそれだけを記録する (対応 .wl の無い名前は `"UnknownDocs"` で失敗し何も書かない)。ドキュメントの中身は見ないので、変更点を書き足してから呼ぶ。SourceVaultRepositoryStatusView の [ドキュメント更新] →「手で直した」がこれを呼ぶ (2026-11-08)
+→ `<|Status ("OK"|"NoDocs"|"Failed"), Package, Marked, DocsDir|>`
+
 ### PackageCommitDiff[packageName] → Association
 現ソースと前回コミットスナップショット(`GithubRepositories/<pkg>`)を ReadOnly に内容比較。manifest を直接 Import(GitHubReadManifest は呼ばない)。リフレッシュ前に呼ぶこと
 → `<|Status, Package, SnapshotDir, SnapshotExists, Added, Changed, Removed, UnchangedCount, ChangeCount, ChangedDetail, Summary|>`

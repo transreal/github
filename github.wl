@@ -365,6 +365,15 @@ PackageDocsFreshnessGate::usage =
   "対応 .wl が存在しない api ドキュメントは検査対象外。docs フォルダが無ければ Proceed -> True。\n" <>
   "戻り値: <|Status, Package, Proceed, Checked, StaleDocs, DocsDir|>。";
 
+PackageDocsMarkCurrent::usage =
+  "PackageDocsMarkCurrent[packageName] は古いと判定された api.md / api_*.md を、手で直したものとして\n" <>
+  "いまの対応 .wl の内容で最新と記録する (docs/.aux_source_hashes.json)。\n" <>
+  "PackageDocsMarkCurrent[packageName, \"api.md\"] / {doc, ...} は指定したものだけ記録する。\n" <>
+  "ClaudeCode`$ClaudeDocApiMaxBytes を超えて自動では再生成できない api ドキュメントを手で直したあとに使う\n" <>
+  "(記録しないと PackageDocsFreshnessGate が古いと判定し続け、PackageCommitPlan も Blocked のまま)。\n" <>
+  "ドキュメントの中身は見ない: 変更点を書き足してから呼ぶこと。\n" <>
+  "戻り値: <|Status (\"OK\"|\"NoDocs\"|\"Failed\"), Package, Marked, DocsDir|>。";
+
 PackageCommitDiff::usage =
   "PackageCommitDiff[packageName] は packageName の現ソースと前回コミットスナップショット\n" <>
   "(GithubRepositories/<pkg>) との差分を ReadOnly に計算する。\n" <>
@@ -4931,6 +4940,47 @@ PackageDocsFreshnessGate[pkg_String] := Module[
 PackageDocsFreshnessGate[___] :=
   <|"Status" -> "Failed",
     "Reason" -> "PackageDocsFreshnessGate[packageName_String] を期待。"|>;
+
+(* 手で直した api ドキュメントを、いまのソースで最新として記録する (2026-11-08)。
+   鮮度は内容ハッシュ基準 (iPACDocStaleQ) なので、$ClaudeDocApiMaxBytes を超えて自動では
+   再生成できない api.md を手で直しても、サイドカーの記録が古いままでは「古い」が消えず
+   PackageCommitPlan も Blocked のままだった (SlideWorkflow api.md 151 KB、11-08)。
+   記録の形式は claudecode.wl の iRecordAuxHash / iAuxHashSet と同じ (api.md → "@main"、
+   api_<aux>.md → auxName、値は iPACAuxSourceHash)。 *)
+PackageDocsMarkCurrent[pkg_String, docs : (All | _String | {___String}) : All] := Module[
+  {srcDir, docsDir, pairs, sel, unknown, j, marked = {}, h, path, res},
+  srcDir = iPACPackageDirectory[];
+  If[!StringQ[srcDir],
+    Return[<|"Status" -> "Failed", "Package" -> pkg, "Reason" -> "PackageDirectoryNotResolved"|>, Module]];
+  docsDir = FileNameJoin[{srcDir, pkg <> "_info", "docs"}];
+  If[!DirectoryQ[docsDir],
+    Return[<|"Status" -> "NoDocs", "Package" -> pkg, "Marked" -> {}, "DocsDir" -> docsDir|>, Module]];
+  pairs = Select[iPACApiWlPair[pkg, srcDir, docsDir, #] & /@ FileNames[{"api.md", "api_*.md"}, docsDir],
+    TrueQ[#["WlExists"]] &];
+  If[docs =!= All,
+    unknown = Complement[Flatten[{docs}], pairs[[All, "Doc"]]];
+    If[unknown =!= {},
+      Return[<|"Status" -> "Failed", "Package" -> pkg, "Reason" -> "UnknownDocs",
+        "UnknownDocs" -> unknown, "DocsDir" -> docsDir|>, Module]]];
+  sel = If[docs === All, Select[pairs, iPACDocStaleQ], Select[pairs, MemberQ[Flatten[{docs}], #["Doc"]] &]];
+  j = iPACAuxHashRead[docsDir];
+  Do[
+    h = iPACAuxSourceHash[p["WlPath"]];
+    If[StringQ[h],
+      j[If[p["AuxName"] === None, "@main", p["AuxName"]]] = h;
+      AppendTo[marked, p["Doc"]]],
+    {p, sel}];
+  If[marked === {},
+    Return[<|"Status" -> "OK", "Package" -> pkg, "Marked" -> {}, "DocsDir" -> docsDir|>, Module]];
+  path = FileNameJoin[{docsDir, ".aux_source_hashes.json"}];
+  res = Quiet @ Check[Export[path, Developer`WriteRawJSONString[j], "Text", CharacterEncoding -> "UTF-8"], $Failed];
+  If[!StringQ[res],
+    Return[<|"Status" -> "Failed", "Package" -> pkg, "Reason" -> "WriteFailed", "Path" -> path|>, Module]];
+  <|"Status" -> "OK", "Package" -> pkg, "Marked" -> marked, "DocsDir" -> docsDir|>
+];
+PackageDocsMarkCurrent[___] :=
+  <|"Status" -> "Failed",
+    "Reason" -> "PackageDocsMarkCurrent[packageName_String, docs] を期待。"|>;
 
 (* --- 前回コミットスナップショットとの差分 (iRefreshPackageGroup の前方マッピングを ReadOnly に再現) --- *)
 
