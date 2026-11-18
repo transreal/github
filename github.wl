@@ -5393,7 +5393,7 @@ Options[PackageCommit] = {"DryRun" -> True, "MessageGenerator" -> Automatic,
   "PolicyLintTimeBudget" -> 60};
 
 PackageCommit[pkg_String, OptionsPattern[]] := Module[
-  {dry, skipGate, plan, res},
+  {dry, skipGate, plan, res, gate},
   dry = TrueQ[OptionValue["DryRun"]];
   skipGate = TrueQ[OptionValue["SkipDocsGate"]];
   (* SkipDocsGate は DryRun プレビュー専用。実コミット (DryRun -> False) では
@@ -5443,9 +5443,19 @@ PackageCommit[pkg_String, OptionsPattern[]] := Module[
       "EnglishDocs" -> Lookup[plan, "EnglishDocs", <||>],
       "PolicyLint" -> Lookup[plan, "PolicyLint", Missing["NotRun"]],
       "Note" -> "DryRun -> False で実コミット (GitHubRefreshAndCommit) を実行。"|>]];
+  (* 03 v0.4 §9.2 (2026-11-10 Inc5、Y-07): 公開の関所。追加・変更するファイルに隔離中・Unknown の版があるか、索引が確かめられない状態で
+     Instruction 系 (ワークフロー・Directives 等) を含むか、fail-closed で索引が確かめられないなら止める。SourceVault_integrity.wl 未ロードなら素通り *)
+  (* 2026-11-11 (レビュー 20261111 F03 / F04): 止めるかは SourceVaultIntegrityPublishBlockedQ で決める。関所が無い・例外・Failure も
+     $SourceVaultIntegrityPublishFailClosed が True なら止める (以前は明示の Deny だけで止めた)。コミットの成否は関所の意図に結び付けて残す *)
+  gate = iPACIntegrityGate[pkg, plan];
+  If[iPACIntegrityBlockedQ[gate],
+    Return[<|"Status" -> "Blocked", "Package" -> pkg, "Committed" -> False,
+      "CommitMessage" -> iPACNoCommitMessage["Blocked", pkg, plan], "Reason" -> "IntegrityPublishBlocked",
+      "Gate" -> If[AssociationQ[gate], KeyTake[gate, {"Decision", "Reasons", "Items"}], <|"Decision" -> "Unavailable", "Detail" -> ToString[gate, InputForm]|>]|>]];
   (* 計画段階で検査済みなので、GitHubRefreshAndCommit 側の検査は省く *)
   res = GitHubRefreshAndCommit[pkg, plan["CommitMessage"],
     DeleteMissing -> TrueQ[OptionValue["DeleteMissing"]], "PolicyLint" -> False];
+  iPACIntegrityOutcome[gate, res];
   <|"Status" -> If[FailureQ[res], "Failed", "Committed"], "Package" -> pkg,
     "Committed" -> ! FailureQ[res], "CommitMessage" -> plan["CommitMessage"],
     "DocsGateSkipped" -> Lookup[plan, "DocsGateSkipped", False],
@@ -5454,6 +5464,22 @@ PackageCommit[pkg_String, OptionsPattern[]] := Module[
     "PolicyLint" -> Lookup[plan, "PolicyLint", Missing["NotRun"]],
     "Result" -> res|>
 ];
+
+iPACIntegrityGate[pkg_String, plan_Association] := Module[{src = Quiet @ Check[iPACPackageDirectory[], $Failed], diff, rels, paths},
+  If[Length[DownValues[SourceVault`SourceVaultIntegrityPublishGate]] === 0, Return[Missing["IntegrityAbsent"]]];
+  If[! StringQ[src], Return[Missing["PackageDirectoryUnresolved"]]];
+  diff = Lookup[plan, "Diff", <||>]; If[! AssociationQ[diff], diff = <||>];
+  rels = DeleteDuplicates @ Select[Join[Lookup[diff, "Added", {}], Lookup[diff, "Changed", {}]], StringQ];
+  paths = Select[FileNameJoin[{src, #}] & /@ rels, FileExistsQ[#] && ! DirectoryQ[#] &];
+  (* 2026-11-11: 迷子のメッセージで結果を捨てない (Check でなく結果の形で判断する) *)
+  Quiet @ Catch[SourceVault`SourceVaultIntegrityPublishGate[<|"Path" -> #|> & /@ paths, "github:" <> pkg, "Channel" -> "PackageCommit"]]];
+(* 2026-11-11: 関所の結果を止める・止めないに直す (SourceVault_integrity.wl 未ロードなら fail-closed の設定だけを見る) *)
+iPACIntegrityBlockedQ[gate_] := If[Length[DownValues[SourceVault`SourceVaultIntegrityPublishBlockedQ]] > 0,
+  TrueQ[SourceVault`SourceVaultIntegrityPublishBlockedQ[gate]], TrueQ[SourceVault`$SourceVaultIntegrityPublishFailClosed]];
+(* コミットの成否を関所の意図 (ActivityId) に結び付けて残す *)
+iPACIntegrityOutcome[gate_, res_] := If[AssociationQ[gate] && StringQ[Lookup[gate, "ActivityId", None]] &&
+    Length[DownValues[SourceVault`SourceVaultIntegrityPublishOutcome]] > 0,
+  Quiet @ Catch[SourceVault`SourceVaultIntegrityPublishOutcome[gate["ActivityId"], If[FailureQ[res], "Failed", "Succeeded"], "Channel" -> "PackageCommit"]]];
 
 PackageCommit[___] :=
   <|"Status" -> "Failed",
