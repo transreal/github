@@ -372,6 +372,7 @@ PackageDocsMarkCurrent::usage =
   "ClaudeCode`$ClaudeDocApiMaxBytes を超えて自動では再生成できない api ドキュメントを手で直したあとに使う\n" <>
   "(記録しないと PackageDocsFreshnessGate が古いと判定し続け、PackageCommitPlan も Blocked のまま)。\n" <>
   "ドキュメントの中身は見ない: 変更点を書き足してから呼ぶこと。\n" <>
+  "記録したソースの写しを <pkg>_info/history/docbase/ に残す (次からは claudecode が差分更新できる: ClaudeCode`$ClaudeDocApiPatch)。\n" <>
   "戻り値: <|Status (\"OK\"|\"NoDocs\"|\"Failed\"), Package, Marked, DocsDir|>。";
 
 PackageCommitDiff::usage =
@@ -4976,6 +4977,16 @@ PackageDocsMarkCurrent[pkg_String, docs : (All | _String | {___String}) : All] :
   res = Quiet @ Check[Export[path, Developer`WriteRawJSONString[j], "Text", CharacterEncoding -> "UTF-8"], $Failed];
   If[!StringQ[res],
     Return[<|"Status" -> "Failed", "Package" -> pkg, "Reason" -> "WriteFailed", "Path" -> path|>, Module]];
+  (* 2026-11-19: 記録したソースの写しを残す。claudecode の差分更新 (ClaudeCode`$ClaudeDocApiPatch) は、
+     この写しと今のソースの差分から変わった節だけを書き直す。置き場所は claudecode の
+     iDocApiBaseDir (= backupDir/docbase) と同じ。history は公開リポジトリに出ない *)
+  Scan[Function[p,
+      If[MemberQ[marked, p["Doc"]],
+        Quiet @ Check[
+          With[{dir = FileNameJoin[{srcDir, pkg <> "_info", "history", "docbase"}]},
+            If[!DirectoryQ[dir], CreateDirectory[dir, CreateIntermediateDirectories -> True]];
+            CopyFile[p["WlPath"], FileNameJoin[{dir, p["Wl"]}], OverwriteTarget -> True]], $Failed]]],
+    sel];
   <|"Status" -> "OK", "Package" -> pkg, "Marked" -> marked, "DocsDir" -> docsDir|>
 ];
 PackageDocsMarkCurrent[___] :=

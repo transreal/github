@@ -242,7 +242,7 @@ GitHubRefreshAndCommit の前段。docs 鮮度ゲート → 前回コミット�
 → `<|Status ("OK"|"NoDocs"|"Failed"), Package, Proceed, Checked, StaleDocs (各 <|Doc,Wl,DocDate,WlDate|>), DocsDir|>`
 
 ### PackageDocsMarkCurrent[packageName] / PackageDocsMarkCurrent[packageName, doc | {doc, ...}] → Association
-手で直した api ドキュメントを、いまの対応 .wl の内容で最新として `.aux_source_hashes.json` に記録する (api.md → `"@main"`、api_<aux>.md → auxName。claudecode の記録と同じ形式)。鮮度は内容ハッシュ基準なので、`ClaudeCode`$ClaudeDocApiMaxBytes` (既定 128000) を超えて自動では再生成できない api ドキュメントは、手で直しても記録しない限り古いままで、PackageCommitPlan も Blocked のまま。doc 省略時は古いものだけ、指定時はそれだけを記録する (対応 .wl の無い名前は `"UnknownDocs"` で失敗し何も書かない)。ドキュメントの中身は見ないので、変更点を書き足してから呼ぶ。SourceVaultRepositoryStatusView の [ドキュメント更新] →「手で直した」がこれを呼ぶ (2026-11-08)
+手で直した api ドキュメントを、いまの対応 .wl の内容で最新として `.aux_source_hashes.json` に記録する (api.md → `"@main"`、api_<aux>.md → auxName。claudecode の記録と同じ形式)。鮮度は内容ハッシュ基準なので、`ClaudeCode`$ClaudeDocApiMaxBytes` (既定 128000) を超えて自動では再生成できない api ドキュメントは、手で直しても記録しない限り古いままで、PackageCommitPlan も Blocked のまま。doc 省略時は古いものだけ、指定時はそれだけを記録する (対応 .wl の無い名前は `"UnknownDocs"` で失敗し何も書かない)。ドキュメントの中身は見ないので、変更点を書き足してから呼ぶ。記録したソースの写しを `<pkg>_info/history/docbase/` に残す (次からは claudecode が差分更新できる: `ClaudeCode`$ClaudeDocApiPatch`)。SourceVaultRepositoryStatusView の [ドキュメント更新] →「手で直した」がこれを呼ぶ (2026-11-08)
 → `<|Status ("OK"|"NoDocs"|"Failed"), Package, Marked, DocsDir|>`
 
 ### PackageCommitDiff[packageName] → Association
